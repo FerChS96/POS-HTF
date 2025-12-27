@@ -11,21 +11,44 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QW
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
+
+def _best_text_stream(name: str):
+    stream = getattr(sys, name, None)
+    if stream is None:
+        stream = getattr(sys, f"__{name}__", None)
+    return stream
+
+
+def _ensure_utf8_stdio_windows() -> None:
+    """En ejecutables PyInstaller --windowed, stdout/stderr pueden ser None."""
+
+    if sys.platform != "win32":
+        return
+
+    import io
+
+    for name in ("stdout", "stderr"):
+        stream = _best_text_stream(name)
+        if stream is None:
+            continue
+        buffer = getattr(stream, "buffer", None)
+        if buffer is None:
+            continue
+        setattr(sys, name, io.TextIOWrapper(buffer, encoding="utf-8", errors="replace"))
+
+_ensure_utf8_stdio_windows()
+
 # Configurar logging ANTES de cualquier otro import
+_handlers = [logging.FileHandler('pos_htf.log', encoding='utf-8')]
+_console_stream = _best_text_stream("stdout")
+if _console_stream is not None:
+    _handlers.append(logging.StreamHandler(_console_stream))
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('pos_htf.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=_handlers,
 )
-
-# Configurar encoding UTF-8 para stdout/stderr en Windows
-if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 try:
     from ui.login_window_pyside import LoginWindow

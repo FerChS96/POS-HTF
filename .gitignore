@@ -4,6 +4,7 @@
 # PyInstaller
 build/
 dist/
+build_onefile/
 *.spec
 *.exe
 

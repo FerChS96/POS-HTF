@@ -1,77 +1,111 @@
+"""Script para generar ejecutable de Windows para POS HTF.
+
+Nota: este script debe funcionar aunque lo ejecutes desde otro directorio.
+Requiere: `pip install pyinstaller` en el mismo Python con el que corres este script.
 """
-Script para generar ejecutable de Windows para POS HTF
-Requiere: pip install pyinstaller
-"""
+
+from __future__ import annotations
 
 import os
 import subprocess
 import sys
 
-def build_exe():
-    """Construir ejecutable de Windows"""
-    
-    # Configuración del build
+
+def build_exe() -> bool:
+    """Construir ejecutable (modo --onefile)."""
+
+    # Siempre trabajar relativo a la carpeta de este script (POS_HTF)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(base_dir)
+
     app_name = "HTF_Gimnasio_POS"
     main_script = "main.py"
-    
-    # Comando pyinstaller
+    dist_dir = "dist"
+    work_dir = "build_onefile"
+    spec_dir = "spec_onefile"
+
+    if not os.path.exists(main_script):
+        print(f"❌ No se encontró {main_script} en: {base_dir}")
+        return False
+
+    # Separador de --add-data: Windows usa ';' y Linux/Mac ':'
+    data_sep = ";" if os.name == "nt" else ":"
+
+    # Ejecutar PyInstaller desde el mismo Python (evita problemas de PATH)
+    # Importante: cuando usamos --specpath, PyInstaller puede resolver rutas de datas
+    # relativo al directorio del .spec. Para evitarlo, usamos rutas absolutas en source.
+    database_src = os.path.join(base_dir, "database")
+    ui_src = os.path.join(base_dir, "ui")
+    services_src = os.path.join(base_dir, "services")
+    utils_src = os.path.join(base_dir, "utils")
+    env_src = os.path.join(base_dir, ".env")
+
     command = [
-        "pyinstaller",
-        "--onefile",  # Un solo archivo ejecutable
-        "--windowed",  # Sin consola (GUI only)
-        f"--name={app_name}",
-        "--clean",  # Limpiar archivos temporales
-        "--noconfirm",  # No confirmar sobrescritura
-        
-        # Incluir archivos adicionales
-        "--add-data=database;database",
-        "--add-data=ui;ui", 
-        "--add-data=services;services",
-        "--add-data=utils;utils",
-        "--add-data=.env;.",
-        
-        # Ocultar imports no encontrados
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--onefile",
+        "--windowed",
+        "--name",
+        app_name,
+        "--distpath",
+        dist_dir,
+        "--workpath",
+        work_dir,
+        "--specpath",
+        spec_dir,
+        "--clean",
+        "--noconfirm",
+        # Incluir carpetas del proyecto (sources absolutos)
+        f"--add-data={database_src}{data_sep}database",
+        f"--add-data={ui_src}{data_sep}ui",
+        f"--add-data={services_src}{data_sep}services",
+        f"--add-data={utils_src}{data_sep}utils",
+        # .env es opcional; si no existe, PyInstaller fallará. Verificamos antes.
+    ]
+
+    if os.path.exists(env_src):
+        command.append(f"--add-data={env_src}{data_sep}.")
+    else:
+        print("ℹ️ No encontré .env en POS_HTF; continúo sin incluirlo en el .exe")
+
+    # Hidden imports (seguro/compat)
+    command += [
         "--hidden-import=sqlite3",
         "--hidden-import=PySide6",
         "--hidden-import=dotenv",
         "--hidden-import=supabase",
         "--hidden-import=psycopg2",
-        
-        main_script
+        main_script,
     ]
-    
-    print("🔨 Construyendo ejecutable de Windows...")
+
+    print("🔨 Construyendo ejecutable de Windows (onefile)...")
+    print("📍 Directorio:", os.getcwd())
     print(f"📁 Nombre: {app_name}.exe")
     print(f"📄 Script principal: {main_script}")
-    print()
-    
+    print("✓ Comando a ejecutar:")
+    print(" ".join(command))
+    print("\n" + "=" * 60 + "\n")
+
     try:
-        # Ejecutar pyinstaller
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        
-        print("✅ Ejecutable creado exitosamente!")
-        print(f"📍 Ubicación: dist/{app_name}.exe")
-        print()
-        print("📋 Para distribuir:")
-        print("1. Copia el archivo .exe desde la carpeta 'dist'")
-        print("2. Asegúrate de incluir el archivo .env si usas Supabase")
-        print("3. El ejecutable no requiere Python instalado")
-        
+        result = subprocess.run(command, check=True)
+        if result.returncode == 0:
+            exe_path = os.path.join(dist_dir, f"{app_name}.exe")
+            print("\n" + "=" * 60)
+            print("✅ Ejecutable creado exitosamente!")
+            print(f"📍 Ubicación: {exe_path}")
+        return True
+
     except subprocess.CalledProcessError as e:
         print(f"❌ Error construyendo ejecutable: {e}")
-        print("Salida del error:", e.stderr)
         return False
-    
-    except FileNotFoundError:
-        print("❌ PyInstaller no encontrado.")
+
+    except ModuleNotFoundError:
+        print("❌ PyInstaller no está instalado en este Python.")
         print("Instala con: pip install pyinstaller")
         return False
-    
-    return True
+
 
 if __name__ == "__main__":
-    if not os.path.exists("main.py"):
-        print("❌ No se encontró main.py en el directorio actual")
-        sys.exit(1)
-    
-    build_exe()
+    ok = build_exe()
+    sys.exit(0 if ok else 1)

@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from PySide6.QtGui import QFont, QCursor, QDoubleValidator
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 import logging
+import time
 from datetime import datetime
 import qtawesome as qta
 
@@ -62,18 +63,29 @@ class NuevaVentaWindow(QWidget):
         # Timer para detectar entrada del escáner
         self.scanner_timer = QTimer()
         self.scanner_timer.setSingleShot(True)
-        self.scanner_timer.setInterval(300)  # 300ms después de que deje de escribir
-        self.scanner_timer.timeout.connect(self.procesar_codigo_barras)
-        
+        self.scanner_timer.setInterval(300)  # ms después de que deje de escribir
+        self.scanner_timer.timeout.connect(self._on_scanner_timeout)
+
+        # Estado para diferenciar tecleo humano vs. escáner (keyboard wedge)
+        self._last_input_ts = None
+        self._scan_started_ts = None
+        self._scan_fast_keystrokes = 0
+        self._last_text_len = 0
+        self._scanner_candidate = False
+
         self.setup_ui()
-        
+
         # Verificar turno al cargar y bloquear si no hay
         if not self.turno_id:
             self.deshabilitar_ventas()
-        
-        # Verificar turno al cargar
-        if not self.turno_id:
-            self.deshabilitar_ventas()
+
+    def _looks_like_barcode(self, text: str) -> bool:
+        """Heurística: para evitar falsos positivos (ej. 'proteina'),
+        tratamos como código de barras solo entradas numéricas con longitud mínima.
+        """
+
+        text = (text or "").strip()
+        return len(text) >= 6 and text.isdigit()
         
     def setup_ui(self):
         """Configurar interfaz de nueva venta"""
@@ -89,16 +101,6 @@ class NuevaVentaWindow(QWidget):
 
         root_layout.addWidget(productos_panel, 3)
         root_layout.addWidget(carrito_panel, 2)
-    
-    def deshabilitar_ventas(self):
-        """Deshabilitar interfaz de ventas cuando no hay turno abierto"""
-        show_error_dialog(
-            self,
-            "Turno No Disponible",
-            "No hay un turno de caja abierto.\n\nNo se pueden realizar ventas sin un turno activo.\n\nPor favor, cierra sesión y vuelve a iniciar para abrir un turno."
-        )
-        # Deshabilitar toda la interfaz
-        self.setEnabled(False)
     
     def deshabilitar_ventas(self):
         """Deshabilitar interfaz de ventas cuando no hay turno abierto"""
@@ -125,9 +127,15 @@ class NuevaVentaWindow(QWidget):
         layout.addWidget(SectionTitle("PRODUCTOS"))
 
         self.search_bar = SearchBar("Buscar producto por código o nombre...")
-        self.search_bar.connect_search(self.buscar_productos)
-        self.search_bar.search_input.returnPressed.connect(self.procesar_codigo_barras)
+        # Con Supabase evitamos consultas por tecla (textChanged). La búsqueda se hace solo
+        # cuando el usuario presiona el botón Buscar.
+        self.search_bar.search_button.clicked.connect(self.buscar_productos)
+
+        # TextChanged: SOLO para detectar fin de escaneo (no consulta por tecla).
         self.search_bar.search_input.textChanged.connect(self._on_search_text_changed)
+
+        # Enter: si parece escaneo -> procesar código; si no -> ejecutar búsqueda.
+        self.search_bar.search_input.returnPressed.connect(self._on_search_return_pressed)
         layout.addWidget(self.search_bar)
 
         self.productos_table = QTableWidget()
@@ -375,58 +383,132 @@ class NuevaVentaWindow(QWidget):
             show_error_dialog(self, "Error", f"No se pudo cargar los productos: {e}")
             
     def _on_search_text_changed(self):
-        """Detectar cuando se ingresa texto (para capturar escáner)"""
+        """Detecta ráfagas de entrada tipo escáner.
+
+        Importante: aquí NO se consulta nada. Solo se arma un buffer y, si parece
+        escaneo (tecleo muy rápido o pegado), se programa el procesamiento una vez
+        que termina la ráfaga.
+        """
+
         texto = self.search_bar.search_input.text().strip()
-        
-        # Reiniciar el timer cada vez que cambia el texto
-        self.scanner_timer.stop()
-        
-        # Si el texto tiene longitud suficiente para ser un código
-        if len(texto) >= 6:  # Códigos típicamente tienen 6+ caracteres
-            logging.info(f"[SCANNER VENTA] Código detectado (longitud {len(texto)}), iniciando timer...")
-            # Iniciar timer para procesar después de 300ms de inactividad
+
+        # Reset al vaciar
+        if not texto:
+            self.scanner_timer.stop()
+            self._last_input_ts = None
+            self._scan_started_ts = None
+            self._scan_fast_keystrokes = 0
+            self._last_text_len = 0
+            self._scanner_candidate = False
+            return
+
+        now = time.perf_counter()
+        if self._last_input_ts is None:
+            self._last_input_ts = now
+            self._scan_started_ts = now
+            self._scan_fast_keystrokes = 0
+            self._last_text_len = len(texto)
+            self._scanner_candidate = False
+            return
+
+        delta = now - self._last_input_ts
+        prev_len = self._last_text_len
+        self._last_input_ts = now
+        self._last_text_len = len(texto)
+
+        # Heurística:
+        # - Escáner: caracteres muy rápidos (ej. <70ms) o salto de longitud (pegado)
+        # - Humano: teclas más lentas -> no auto-agregar
+        length_jump = (len(texto) - prev_len) > 1
+        if delta < 0.07:
+            self._scan_fast_keystrokes += 1
+
+        scanner_like = length_jump or self._scan_fast_keystrokes >= 3
+        self._scanner_candidate = scanner_like
+
+        # Solo programar procesamiento si parece escaneo y el texto parece código
+        if scanner_like and self._looks_like_barcode(texto):
+            self.scanner_timer.stop()
             self.scanner_timer.start()
-    
-    def procesar_codigo_barras(self):
-        """Procesar código de barras del escáner (cuando se presiona Enter)"""
-        import time
-        
-        tiempo_inicio = time.perf_counter()
+        else:
+            # Si no es escáner, no auto-procesar
+            self.scanner_timer.stop()
+
+    def _on_scanner_timeout(self):
+        """Se dispara cuando termina la ráfaga de entrada del escáner."""
+
+        if not self._scanner_candidate:
+            return
+
         codigo = self.search_bar.text().strip()
-        
-        # Limpiar campo inmediatamente para permitir siguiente escaneo
-        self.search_bar.clear()
-        
         if not codigo:
             return
-        
+        if not self._looks_like_barcode(codigo):
+            return
+
+        # Reset del estado para evitar doble procesamiento
+        self._scanner_candidate = False
+        self._scan_fast_keystrokes = 0
+        self._last_input_ts = None
+        self._scan_started_ts = None
+        self._last_text_len = len(codigo)
+
+        self._try_add_by_barcode(codigo, clear_on_success=True, clear_on_failure=False)
+
+    def _on_search_return_pressed(self):
+        """Enter en el campo de búsqueda.
+
+        - Si parece código de barras (escáner): procesa el código.
+        - Si es texto normal: ejecuta la búsqueda (igual que botón Buscar).
+        """
+        texto = self.search_bar.text().strip()
+        if not texto:
+            return
+
+        # Si hay un timer pendiente por escáner, lo cancelamos y procesamos ya.
+        if self.scanner_timer.isActive():
+            self.scanner_timer.stop()
+
+        # Si parece código de barras (numérico), procesarlo como escaneo.
+        if self._looks_like_barcode(texto):
+            self._try_add_by_barcode(texto, clear_on_success=True, clear_on_failure=False)
+            return
+
+        self.buscar_productos()
+    
+    def _try_add_by_barcode(self, codigo: str, *, clear_on_success: bool = True, clear_on_failure: bool = False):
+        """Consulta un producto por código exacto y lo agrega al carrito (1 sola consulta)."""
+
+        tiempo_inicio = time.perf_counter()
+
         try:
-            # Búsqueda rápida por código de barras exacto
-            tiempo_busqueda = time.perf_counter()
             producto_encontrado = self.pg_manager.get_product_by_barcode(codigo)
-            tiempo_busqueda_total = (time.perf_counter() - tiempo_busqueda) * 1000
-            
             if producto_encontrado:
-                # Verificar que tenga stock
-                if producto_encontrado['stock_actual'] > 0:
+                if producto_encontrado.get('stock_actual', 0) > 0:
                     self.agregar_al_carrito(producto_encontrado)
+                    if clear_on_success:
+                        self.search_bar.clear()
                     tiempo_total = (time.perf_counter() - tiempo_inicio) * 1000
-                    logging.info(f"✓ Producto agregado: {producto_encontrado['nombre']} | Búsqueda: {tiempo_busqueda_total:.1f}ms | Total: {tiempo_total:.1f}ms")
-                else:
-                    show_warning_dialog(
-                        self,
-                        "Sin stock",
-                        f"El producto {producto_encontrado['nombre']} no tiene stock disponible"
-                    )
+                    logging.info(f"✓ Producto agregado por escáner: {producto_encontrado.get('nombre')} | Total: {tiempo_total:.1f}ms")
+                    return
+
+                show_warning_dialog(
+                    self,
+                    "Sin stock",
+                    f"El producto {producto_encontrado.get('nombre')} no tiene stock disponible"
+                )
             else:
-                # Si no se encontró por código de barras, hacer búsqueda general
-                tiempo_busqueda2 = time.perf_counter()
-                self.search_bar.search_input.setText(codigo)
-                self.buscar_productos()
-                tiempo_busqueda2_total = (time.perf_counter() - tiempo_busqueda2) * 1000
-                tiempo_total = (time.perf_counter() - tiempo_inicio) * 1000
-                logging.info(f"⊘ Código no encontrado (búsqueda general): {tiempo_busqueda2_total:.1f}ms | Total: {tiempo_total:.1f}ms")
-                
+                show_warning_dialog(
+                    self,
+                    "Producto no encontrado",
+                    "No se encontró un producto con ese código.\n\nSi quieres buscar por nombre/código parcial, presiona Buscar o Enter."
+                )
+
+            if clear_on_failure:
+                self.search_bar.clear()
+            else:
+                self.search_bar.search_input.selectAll()
+
         except Exception as e:
             logging.error(f"Error al procesar código de barras: {e}")
             show_error_dialog(
