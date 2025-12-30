@@ -152,17 +152,31 @@ class ConfirmarPagoEfectivoDialog(QDialog):
     def _procesar_codigo(self, codigo_pago: str):
         """Buscar el código en notificaciones_pos y confirmar el pago"""
         try:
+            # Normalizar el código antes de la consulta
+            import re
+            codigo_original = codigo_pago.strip()
+            codigo_upper = codigo_original.upper()
+            match = re.match(r'CASH[-\'\s]*(\d+)', codigo_upper)
+            
+            if match:
+                numero = match.group(1)
+                codigo_normalizado = f"CASH-{numero}"
+                logging.info(f"[CONFIRMAR PAGO] Código normalizado: {codigo_original} → {codigo_normalizado}")
+            else:
+                codigo_normalizado = codigo_upper
+                logging.info(f"[CONFIRMAR PAGO] Código: {codigo_original}")
+            
             # 1. Buscar el código en notificaciones_pos (columna: codigo_pago_generado)
             response = self.supabase_service.client.table('notificaciones_pos').select(
                 'id_venta_digital'
-            ).eq('codigo_pago_generado', codigo_pago).limit(1).execute()
+            ).eq('codigo_pago_generado', codigo_normalizado).limit(1).execute()
             
             if not response.data or len(response.data) == 0:
-                logging.warning(f"[!] Código de pago no encontrado: {codigo_pago}")
+                logging.warning(f"[!] Código de pago no encontrado: {codigo_normalizado}")
                 show_warning_dialog(
                     self,
                     "Código no encontrado",
-                    f"El código '{codigo_pago}' no existe en notificaciones"
+                    f"El código '{codigo_normalizado}' no existe en notificaciones"
                 )
                 self.scan_input.clear()
                 self.scan_input.setFocus()

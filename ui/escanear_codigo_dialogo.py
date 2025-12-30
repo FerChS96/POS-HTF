@@ -149,7 +149,7 @@ class EscanearCodigoDialogo(QDialog):
             # Normalizar código usando regex
             codigo_original = codigo.strip()
             codigo_upper = codigo_original.upper()
-            match = re.match(r'CASH[^\d]*(\d+)', codigo_upper)
+            match = re.match(r'CASH[-\'\s]*(\d+)', codigo_upper)
             
             if match:
                 numero = match.group(1)
@@ -162,6 +162,9 @@ class EscanearCodigoDialogo(QDialog):
             notif = None
             ya_procesada = False
             
+            # Normalizar el código antes de cualquier consulta
+            codigo_normalizado = re.sub(r"[-'\s]+", "-", codigo_normalizado)
+
             # Buscar en Supabase
             if self.supabase_service:
                 # Primero buscar notificaciones NO respondidas
@@ -189,6 +192,9 @@ class EscanearCodigoDialogo(QDialog):
                     logging.info(f"[ESCÁNER PAGO] Notificación encontrada: {notif['id_notificacion']}")
                 else:
                     # Si no encuentra pendiente, buscar TODAS (incluyendo respondidas)
+                    # Asegurarse de que el código esté normalizado antes de la consulta
+                    codigo_normalizado = re.sub(r"[-'\s]+", "-", codigo_normalizado)
+                    
                     response = self.supabase_service.client.table('notificaciones_pos') \
                         .select('*, miembros(nombres, apellido_paterno, apellido_materno, telefono)') \
                         .eq('codigo_pago_generado', codigo_normalizado) \
