@@ -119,8 +119,8 @@ class NuevaVentaWindow(QWidget):
         
         layout.addWidget(self.productos_table)
         
-        # Cargar productos iniciales
-        self.cargar_productos()
+        # No cargar productos automáticamente - mostrar mensaje de búsqueda
+        self.mostrar_mensaje_busqueda()
         
         parent_layout.addWidget(panel)
         
@@ -212,11 +212,20 @@ class NuevaVentaWindow(QWidget):
             logging.error(f"Error cargando productos: {e}")
             show_error_dialog(self, "Error", f"No se pudo cargar los productos: {e}")
             
+    def mostrar_mensaje_busqueda(self):
+        """Mostrar mensaje indicando que se debe buscar productos"""
+        self.productos_table.setRowCount(1)
+        self.productos_table.setItem(0, 0, QTableWidgetItem(""))
+        self.productos_table.setItem(0, 1, QTableWidgetItem("Escriba en el campo de búsqueda para encontrar productos..."))
+        self.productos_table.setItem(0, 2, QTableWidgetItem(""))
+        self.productos_table.setItem(0, 3, QTableWidgetItem(""))
+        # No agregar botón en la columna de acciones
+            
     def buscar_productos(self):
         """Buscar productos por texto"""
         texto = self.search_input.text().strip()
         if not texto:
-            self.cargar_productos()
+            self.mostrar_mensaje_busqueda()
             return
             
         try:

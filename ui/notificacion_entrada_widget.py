@@ -34,29 +34,41 @@ class NotificacionEntradaWidget(QDialog):
             parent: Widget padre
             duracion: Tiempo en milisegundos antes de cerrar automáticamente (0 = no auto-cerrar)
         """
-        super().__init__(parent)
-        self.miembro_data = miembro_data
-        self.duracion = duracion
-        
-        # Variables para arrastre
-        self.dragging = False
-        self.drag_position = None
-        
-        # Configuración de ventana
-        self.setWindowTitle("Acceso Registrado")
-        self.setModal(False)  # No bloquea la ventana principal
-        self.setWindowFlags(
-            Qt.Window | 
-            Qt.WindowStaysOnTopHint | 
-            Qt.FramelessWindowHint
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        
-        self.setFixedSize(600, 700)
-        
-        # Inicializar componentes antes de aplicar estilos
-        self.setup_ui()
-        self.aplicar_estilos()
+        try:
+            # Verificar que miembro_data sea válido
+            if not isinstance(miembro_data, dict):
+                logging.error(f"ERROR: miembro_data no es un diccionario: {type(miembro_data)}")
+                raise ValueError("miembro_data debe ser un diccionario")
+
+            super().__init__(parent)
+            self.miembro_data = miembro_data
+            self.duracion = duracion
+
+            # Variables para arrastre
+            self.dragging = False
+            self.drag_position = None
+
+            # Configuración de ventana
+            self.setWindowTitle("Acceso Registrado")
+            self.setModal(False)  # No bloquea la ventana principal
+            self.setWindowFlags(
+                Qt.Window |
+                Qt.WindowStaysOnTopHint |
+                Qt.FramelessWindowHint
+            )
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+            self.setFixedSize(600, 700)
+
+            # Inicializar componentes antes de aplicar estilos
+            self.setup_ui()
+            self.aplicar_estilos()
+
+        except Exception as e:
+            logging.error(f"Error inicializando NotificacionEntradaWidget: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         # Configurar timers después de inicializar componentes
         self.setup_timers()
@@ -167,7 +179,17 @@ class NotificacionEntradaWidget(QDialog):
         content_layout.addLayout(foto_layout)
         
         # ===== NOMBRE DEL MIEMBRO =====
-        nombre_completo = f"{self.miembro_data['nombres']} {self.miembro_data['apellido_paterno']} {self.miembro_data['apellido_materno']}"
+        try:
+            nombres = self.miembro_data.get('nombres', 'N/A')
+            apellido_paterno = self.miembro_data.get('apellido_paterno', '')
+            apellido_materno = self.miembro_data.get('apellido_materno', '')
+            nombre_completo = f"{nombres} {apellido_paterno} {apellido_materno}".strip()
+            if not nombre_completo or nombre_completo == 'N/A':
+                nombre_completo = "MIEMBRO DESCONOCIDO"
+        except Exception as e:
+            logging.error(f"Error procesando nombre del miembro: {e}")
+            nombre_completo = "ERROR EN NOMBRE"
+            
         nombre_label = QLabel(nombre_completo.upper())
         nombre_label.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, 18, QFont.Bold))
         nombre_label.setAlignment(Qt.AlignCenter)
@@ -202,7 +224,12 @@ class NotificacionEntradaWidget(QDialog):
         info_layout.setSpacing(WindowsPhoneTheme.MARGIN_SMALL)
         
         # ID Miembro
-        self.agregar_info_row(info_layout, "ID:", f"#{self.miembro_data['id_miembro']}")
+        try:
+            id_miembro = self.miembro_data.get('id_miembro', 'N/A')
+            self.agregar_info_row(info_layout, "ID:", f"#{id_miembro}")
+        except Exception as e:
+            logging.error(f"Error procesando ID del miembro: {e}")
+            self.agregar_info_row(info_layout, "ID:", "#ERROR")
         
         # Fecha de registro
         fecha_registro = self.miembro_data.get('fecha_registro', 'N/A')
@@ -266,10 +293,17 @@ class NotificacionEntradaWidget(QDialog):
         # Primero mostrar placeholder
         self.mostrar_placeholder()
         
-        # Crear un hilo para cargar la foto
-        self.foto_thread = FotoThread(self.miembro_data.get('foto'))
-        self.foto_thread.foto_loaded.connect(self.on_foto_loaded)
-        self.foto_thread.start()
+        # Priorizar foto_url sobre foto (path local)
+        foto_url = self.miembro_data.get('foto_url')
+        foto_path = self.miembro_data.get('foto')
+        
+        foto_a_cargar = foto_url or foto_path
+        
+        if foto_a_cargar:
+            # Crear un hilo para cargar la foto
+            self.foto_thread = FotoThread(foto_a_cargar)
+            self.foto_thread.foto_loaded.connect(self.on_foto_loaded)
+            self.foto_thread.start()
     
     def on_foto_loaded(self, pixmap):
         """Manejar la carga de la foto cuando el hilo termina"""
@@ -346,7 +380,7 @@ class NotificacionEntradaWidget(QDialog):
         
         self.update_timer.start(1000)  # Actualizar cada segundo
         
-        logging.info(f"Notificación de entrada mostrada para miembro ID: {self.miembro_data['id_miembro']}")
+        logging.debug(f"Notificación de entrada mostrada para miembro ID: {self.miembro_data['id_miembro']}")
     
     def animar_entrada(self):
         """Animar la aparición del widget"""
@@ -378,11 +412,11 @@ class NotificacionEntradaWidget(QDialog):
         self.opacity_animation.finished.connect(self.close)
         self.opacity_animation.start()
         
-        logging.info("Notificación de entrada cerrada")
+        logging.debug("Notificación de entrada cerrada")
     
     def asignar_cargo(self):
         """Asignar cargo por suplantación de identidad"""
-        logging.info(f"Asignando cargo por suplantación para miembro ID: {self.miembro_data['id_miembro']}")
+        logging.debug(f"Asignando cargo por suplantación para miembro ID: {self.miembro_data['id_miembro']}")
         
         # Emitir señal con los datos del miembro
         self.cargo_asignado.emit(self.miembro_data)
@@ -492,17 +526,41 @@ class FotoThread(QThread):
     """Hilo para cargar la foto del miembro de forma asíncrona"""
     foto_loaded = Signal(QPixmap)
     
-    def __init__(self, foto_path):
+    def __init__(self, foto_path_or_url):
         super().__init__()
-        self.foto_path = foto_path
+        self.foto_path_or_url = foto_path_or_url
     
     def run(self):
         """Cargar la foto en un hilo separado"""
-        if self.foto_path and os.path.exists(self.foto_path):
-            pixmap = QPixmap(self.foto_path)
-            if not pixmap.isNull():
-                self.foto_loaded.emit(pixmap)
-                return
+        try:
+            # Primero intentar como path local
+            if self.foto_path_or_url and os.path.exists(self.foto_path_or_url):
+                pixmap = QPixmap(self.foto_path_or_url)
+                if not pixmap.isNull():
+                    self.foto_loaded.emit(pixmap)
+                    return
+            
+            # Si no es un path válido, intentar como URL
+            if self.foto_path_or_url and self.foto_path_or_url.startswith(('http://', 'https://')):
+                import requests
+                from io import BytesIO
+                
+                try:
+                    response = requests.get(self.foto_path_or_url, timeout=10)
+                    response.raise_for_status()
+                    
+                    # Crear QPixmap desde los bytes de la respuesta
+                    image_data = BytesIO(response.content)
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(image_data.getvalue())
+                    
+                    if not pixmap.isNull():
+                        self.foto_loaded.emit(pixmap)
+                        return
+                except Exception as e:
+                    logging.warning(f"Error cargando foto desde URL {self.foto_path_or_url}: {e}")
         
-        # Si no hay foto o hay error, emitir None
-        self.foto_loaded.emit(None)
+        except Exception as e:
+            logging.warning(f"Error general cargando foto: {e}")
+        
+        # Si no hay foto o hay error, no emitir nada (se mantiene el placeholder)

@@ -182,15 +182,33 @@ class NuevoProductoWindow(QWidget):
         self.refrigeracion_check = QCheckBox("Requiere refrigeración")
         normales_form.addRow("Refrigeración:", self.refrigeracion_check)
         
-        # Peso
-        self.peso_input = TouchMoneyInput(
+        # Cantidad de Medida
+        self.cantidad_medida_input = TouchMoneyInput(
             minimum=0.0,
             maximum=999999.99,
             decimals=2,
             default_value=None,
-            prefix=" gr "
+            prefix=""
         )
-        normales_form.addRow("Peso:", self.peso_input)
+        normales_form.addRow("Cantidad de Medida:", self.cantidad_medida_input)
+        
+        # Unidad de Medida
+        self.unidad_medida_combo = QComboBox()
+        self.unidad_medida_combo.addItems([
+            "-- Seleccionar unidad --",
+            "gramos",
+            "kilogramos",
+            "mililitros",
+            "litros",
+            "piezas",
+            "onzas",
+            "libras",
+            "galones",
+            "caja",
+            "paquete"
+        ])
+        self.unidad_medida_combo.setMinimumHeight(45)
+        normales_form.addRow("Unidad de Medida:", self.unidad_medida_combo)
         
         normales_layout.addLayout(normales_form)
         form_layout.addWidget(self.normales_widget)
@@ -232,15 +250,33 @@ class NuevoProductoWindow(QWidget):
         self.tipo_suplemento_combo.setMinimumHeight(45)
         suplementos_form.addRow("Tipo de Suplemento *:", self.tipo_suplemento_combo)
         
-        # Peso Neto
-        self.peso_neto_input = TouchMoneyInput(
+        # Cantidad de Medida
+        self.cantidad_medida_suplemento_input = TouchMoneyInput(
             minimum=0.0,
             maximum=999999.99,
             decimals=2,
             default_value=None,
-            prefix=" gr "
+            prefix=""
         )
-        suplementos_form.addRow("Peso Neto:", self.peso_neto_input)
+        suplementos_form.addRow("Cantidad de Medida:", self.cantidad_medida_suplemento_input)
+        
+        # Unidad de Medida
+        self.unidad_medida_suplemento_combo = QComboBox()
+        self.unidad_medida_suplemento_combo.addItems([
+            "-- Seleccionar unidad --",
+            "gramos",
+            "kilogramos",
+            "mililitros",
+            "litros",
+            "piezas",
+            "onzas",
+            "libras",
+            "galones",
+            "caja",
+            "paquete"
+        ])
+        self.unidad_medida_suplemento_combo.setMinimumHeight(45)
+        suplementos_form.addRow("Unidad de Medida:", self.unidad_medida_suplemento_combo)
         
         # Fecha de Vencimiento
         self.fecha_vencimiento_input = QDateEdit()
@@ -399,12 +435,14 @@ class NuevoProductoWindow(QWidget):
         self.codigo_barras_input.clear()
         self.categoria_input.setText("General")
         self.refrigeracion_check.setChecked(False)
-        self.peso_input.setValue(0.0)
+        self.cantidad_medida_input.setValue(0.0)
+        self.unidad_medida_combo.setCurrentIndex(0)
         
         # Campos de suplementos
         self.marca_input.clear()
         self.tipo_suplemento_combo.setCurrentIndex(0)
-        self.peso_neto_input.setValue(0.0)
+        self.cantidad_medida_suplemento_input.setValue(0.0)
+        self.unidad_medida_suplemento_combo.setCurrentIndex(0)
         self.fecha_vencimiento_input.setDate(QDate.currentDate().addYears(1))
         
         # Enfocar primer campo
@@ -526,7 +564,8 @@ class NuevoProductoWindow(QWidget):
                     'precio_venta': precio,
                     'categoria': self.categoria_input.text().strip() or 'General',
                     'requiere_refrigeracion': self.refrigeracion_check.isChecked(),
-                    'peso_gr': self.peso_input.value() if self.peso_input.value() > 0 else None,
+                    'cantidad_medida': self.cantidad_medida_input.value() if self.cantidad_medida_input.value() > 0 else None,
+                    'unidad_medida': self.unidad_medida_combo.currentText() if self.unidad_medida_combo.currentIndex() > 0 else None,
                     'activo': activo
                 }
                 
@@ -541,7 +580,8 @@ class NuevoProductoWindow(QWidget):
                     'descripcion': descripcion,
                     'marca': self.marca_input.text().strip(),
                     'tipo': self.tipo_suplemento_combo.currentText(),
-                    'peso_neto_gr': self.peso_neto_input.value() if self.peso_neto_input.value() > 0 else None,
+                    'cantidad_medida': self.cantidad_medida_suplemento_input.value() if self.cantidad_medida_suplemento_input.value() > 0 else None,
+                    'unidad_medida': self.unidad_medida_suplemento_combo.currentText() if self.unidad_medida_suplemento_combo.currentIndex() > 0 else None,
                     'precio_venta': precio,
                     'activo': activo,
                     'fecha_vencimiento': self.fecha_vencimiento_input.date().toString("yyyy-MM-dd")

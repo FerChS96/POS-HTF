@@ -167,11 +167,12 @@ class MiembrosLoaderThread(QThread):
                     .select('''
                         *,
                         asignaciones_activas(
+                            fecha_inicio,
                             fecha_fin,
                             activa,
                             cancelada,
-                            ca_productos_digitales(nombre),
-                            lockers(numero)
+                            id_producto_digital,
+                            ca_productos_digitales(nombre, tipo)
                         )
                     ''')\
                     .order('nombres')\
@@ -248,7 +249,7 @@ class BuscarMiembroWindow(QWidget):
         self.miembros_table.setColumnCount(8)
         self.miembros_table.setHorizontalHeaderLabels([
             "Código", "Nombre Completo", "Teléfono", "Email", 
-            "Membresía", "Vencimiento", "Locker", "Estado"
+            "Membresía", "Vencimiento", "Locker", "Estado Membresía"
         ])
         
         # Configurar header
@@ -341,42 +342,92 @@ class BuscarMiembroWindow(QWidget):
                 fecha_registro = row.get('fecha_registro')
                 fecha_registro_str = datetime.strptime(fecha_registro, '%Y-%m-%d').strftime('%d/%m/%Y') if fecha_registro else "N/A"
                 
-                # Obtener información de asignación activa (si existe)
+                # Obtener información de asignaciones activas (membresías y lockers)
                 asignaciones = row.get('asignaciones_activas', [])
                 membresia = None
-                fecha_fin = None
-                fecha_fin_str = "N/A"
+                fecha_fin_membresia = None
+                fecha_fin_membresia_str = "N/A"
                 estado_vigencia = None
-                numero_locker = None
                 estado_membresia = None
                 
+                # Separar asignaciones de membresías y lockers
+                asignacion_membresia = None
+                asignacion_locker = None  # Solo necesitamos saber si existe, no el número
+                
                 if asignaciones and len(asignaciones) > 0:
-                    # Filtrar solo asignaciones activas y no canceladas
-                    asignaciones_validas = [a for a in asignaciones if a.get('activa') and not a.get('cancelada')]
-                    
-                    if asignaciones_validas:
-                        asig = asignaciones_validas[0]
-                        if asig.get('ca_productos_digitales'):
-                            membresia = asig['ca_productos_digitales'].get('nombre')
-                        if asig.get('fecha_fin'):
-                            fecha_fin = datetime.strptime(asig['fecha_fin'], '%Y-%m-%d').date()
-                            fecha_fin_str = fecha_fin.strftime('%d/%m/%Y')
+                    # Primera pasada: buscar lockers (id_producto_digital = 9)
+                    for a in asignaciones:
+                        if not a.get('activa') or a.get('cancelada'):
+                            continue
+                        
+                        # Solo procesar asignaciones de locker mensual (id_producto_digital = 9)
+                        id_producto = a.get('id_producto_digital')
+                        if id_producto != 9:
+                            continue
+                        
+                        # Verificar que las fechas estén dentro del rango
+                        fecha_inicio_str = a.get('fecha_inicio')
+                        fecha_fin_str_temp = a.get('fecha_fin')
+                        
+                        if not fecha_inicio_str or not fecha_fin_str_temp:
+                            continue
                             
-                            # Calcular estado de vigencia
-                            if fecha_fin < hoy:
+                        fecha_inicio = datetime.strptime(fecha_inicio_str, '%Y-%m-%d').date()
+                        fecha_fin_temp = datetime.strptime(fecha_fin_str_temp, '%Y-%m-%d').date()
+                        
+                        # La asignación es válida si hoy está entre fecha_inicio y fecha_fin
+                        if fecha_inicio <= hoy <= fecha_fin_temp:
+                            # Guardar solo si no tenemos uno o si este vence después
+                            if not asignacion_locker or fecha_fin_temp > datetime.strptime(asignacion_locker['fecha_fin'], '%Y-%m-%d').date():
+                                asignacion_locker = a
+                    
+                    # Segunda pasada: buscar membresías (id_producto_digital != 9)
+                    for a in asignaciones:
+                        if not a.get('activa') or a.get('cancelada'):
+                            continue
+                        
+                        # Solo procesar asignaciones que NO sean locker mensual
+                        id_producto = a.get('id_producto_digital')
+                        if id_producto == 9:
+                            continue
+                        
+                        # Verificar que las fechas estén dentro del rango
+                        fecha_inicio_str = a.get('fecha_inicio')
+                        fecha_fin_str_temp = a.get('fecha_fin')
+                        
+                        if not fecha_inicio_str or not fecha_fin_str_temp:
+                            continue
+                            
+                        fecha_inicio = datetime.strptime(fecha_inicio_str, '%Y-%m-%d').date()
+                        fecha_fin_temp = datetime.strptime(fecha_fin_str_temp, '%Y-%m-%d').date()
+                        
+                        # La asignación es válida si hoy está entre fecha_inicio y fecha_fin
+                        if fecha_inicio <= hoy <= fecha_fin_temp:
+                            # Guardar solo si no tenemos una o si esta vence después
+                            if not asignacion_membresia or fecha_fin_temp > datetime.strptime(asignacion_membresia['fecha_fin'], '%Y-%m-%d').date():
+                                asignacion_membresia = a
+                    
+                    # Procesar la asignación de membresía encontrada
+                    if asignacion_membresia:
+                        if asignacion_membresia.get('ca_productos_digitales'):
+                            membresia = asignacion_membresia['ca_productos_digitales'].get('nombre')
+                        
+                        if asignacion_membresia.get('fecha_fin'):
+                            fecha_fin_membresia = datetime.strptime(asignacion_membresia['fecha_fin'], '%Y-%m-%d').date()
+                            fecha_fin_membresia_str = fecha_fin_membresia.strftime('%d/%m/%Y')
+                            
+                            # Calcular estado de vigencia basado en fecha_fin de la membresía
+                            if fecha_fin_membresia < hoy:
                                 estado_vigencia = 'vencida'
                                 estado_membresia = 'Vencida'
-                            elif fecha_fin <= (hoy + timedelta(days=7)):
+                            elif fecha_fin_membresia <= (hoy + timedelta(days=7)):
                                 estado_vigencia = 'por_vencer'
                                 estado_membresia = 'Por vencer'
                             else:
                                 estado_vigencia = 'vigente'
                                 estado_membresia = 'Vigente'
-                        
-                        if asig.get('lockers'):
-                            numero_locker = asig['lockers'].get('numero')
-                
-                # Construir objeto de miembro
+                    
+                    # Construir objeto de miembro
                 self.miembros_data.append({
                     'id_miembro': row.get('id_miembro'),
                     'nombres': row.get('nombres', ''),
@@ -392,9 +443,9 @@ class BuscarMiembroWindow(QWidget):
                     'fecha_registro': fecha_registro_str,
                     'fecha_nacimiento': fecha_nacimiento_str,
                     'membresia': membresia or 'Sin membresía',
-                    'fecha_fin_membresia': fecha_fin_str,
+                    'fecha_fin_membresia': fecha_fin_membresia_str,
                     'estado_membresia': estado_membresia,
-                    'locker': f"Locker {numero_locker}" if numero_locker else 'Sin locker',
+                    'locker': 'Locker asignado' if asignacion_locker else 'Sin locker',
                     'estado_vigencia': estado_vigencia
                 })
             
@@ -507,16 +558,22 @@ class BuscarMiembroWindow(QWidget):
                 item_locker.setTextAlignment(Qt.AlignCenter)
                 self.miembros_table.setItem(row, 6, item_locker)
                 
-                # Estado
-                estado = "ACTIVO" if miembro['activo'] else "INACTIVO"
-                item_estado = QTableWidgetItem(estado)
+                # Estado de Membresía (basado en asignación activa, no en estado del miembro)
+                estado_membresia_texto = miembro.get('estado_membresia') or 'Sin membresía'
+                item_estado = QTableWidgetItem(estado_membresia_texto)
                 item_estado.setTextAlignment(Qt.AlignCenter)
                 item_estado.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_NORMAL, QFont.Bold))
                 
-                if miembro['activo']:
+                # Color según estado de la asignación
+                if miembro['estado_vigencia'] == 'vigente':
                     item_estado.setForeground(Qt.darkGreen)
-                else:
+                elif miembro['estado_vigencia'] == 'por_vencer':
+                    item_estado.setForeground(Qt.darkYellow)
+                elif miembro['estado_vigencia'] == 'vencida':
                     item_estado.setForeground(Qt.darkRed)
+                else:
+                    # Sin membresía
+                    item_estado.setForeground(Qt.gray)
                 
                 self.miembros_table.setItem(row, 7, item_estado)
             

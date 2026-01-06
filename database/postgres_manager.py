@@ -50,6 +50,7 @@ class PostgresManager:
         """
         self.db_config = db_config
         self.client: Optional[Client] = None
+        self.supabase_key = None  # Almacenar la key para llamadas HTTP
         self.is_connected = False
         self.connect()
     
@@ -68,6 +69,9 @@ class PostgresManager:
             if not url or not key:
                 logging.error("Credenciales de Supabase no configuradas. Configura SUPABASE_URL y SUPABASE_ROLE_KEY (o SUPABASE_KEY)")
                 raise ValueError("Missing Supabase credentials")
+            
+            # Almacenar la key para uso en llamadas HTTP
+            self.supabase_key = key
             
             # Crear cliente de Supabase
             self.client = create_client(url, key)
@@ -813,7 +817,8 @@ class PostgresManager:
                 'precio_venta': float(producto_data['precio_venta']),
                 'categoria': producto_data.get('categoria', 'General'),
                 'requiere_refrigeracion': bool(producto_data.get('requiere_refrigeracion', False)),
-                'peso_gr': float(producto_data['peso_gr']) if producto_data.get('peso_gr') else None,
+                'cantidad_medida': float(producto_data['cantidad_medida']) if producto_data.get('cantidad_medida') else None,
+                'unidad_medida': producto_data.get('unidad_medida'),
                 'activo': bool(producto_data.get('activo', True))
             }
             
@@ -844,7 +849,8 @@ class PostgresManager:
                 'descripcion': suplemento_data.get('descripcion'),
                 'marca': suplemento_data['marca'],
                 'tipo': suplemento_data['tipo'],
-                'peso_neto_gr': float(suplemento_data['peso_neto_gr']) if suplemento_data.get('peso_neto_gr') else None,
+                'cantidad_medida': float(suplemento_data['cantidad_medida']) if suplemento_data.get('cantidad_medida') else None,
+                'unidad_medida': suplemento_data.get('unidad_medida'),
                 'precio_venta': float(suplemento_data['precio_venta']),
                 'activo': bool(suplemento_data.get('activo', True)),
                 'fecha_vencimiento': suplemento_data.get('fecha_vencimiento')
@@ -1093,6 +1099,8 @@ class PostgresManager:
     def obtener_movimientos_completos(self, limite: int = 1000) -> List[Dict]:
         """Obtener movimientos de inventario con nombres de productos y usuarios
         
+        Optimizado: Usa batch queries en lugar de N+1 queries individuales
+        
         Args:
             limite: Número máximo de movimientos a retornar (default 1000)
         
@@ -1105,70 +1113,120 @@ class PostgresManager:
             if not self.is_connected:
                 self.connect()
             
-            # Obtener movimientos básicos, excluyendo los de tipo "venta"
+            # 1. Obtener movimientos básicos (UNA sola query)
+            logging.info("📊 Obteniendo movimientos de base de datos...")
             response = self.client.table('movimientos_inventario').select(
                 'id_movimiento, fecha, tipo_movimiento, codigo_interno, tipo_producto, '
                 'cantidad, stock_anterior, stock_nuevo, motivo, id_usuario, id_venta'
             ).neq('tipo_movimiento', 'venta').order('fecha', desc=True).limit(limite).execute()
             
             movimientos = response.data or []
+            if not movimientos:
+                logging.info("✅ No hay movimientos para retornar")
+                return []
+            
+            logging.info(f"📦 Procesando {len(movimientos)} movimientos...")
+            
+            # 2. Extraer códigos únicos de productos (para batch query)
+            codigos_varios = set()
+            codigos_suplementos = set()
+            ids_usuarios = set()
+            
+            for mov in movimientos:
+                tipo = mov.get('tipo_producto', 'varios')
+                codigo = mov.get('codigo_interno')
+                
+                if tipo == 'varios' and codigo:
+                    codigos_varios.add(codigo)
+                elif tipo == 'suplemento' and codigo:
+                    codigos_suplementos.add(codigo)
+                
+                id_usuario = mov.get('id_usuario')
+                if id_usuario:
+                    ids_usuarios.add(id_usuario)
+            
+            # 3. Obtener datos de productos en BATCH (máximo 2 queries en lugar de N)
+            productos_varios_map = {}
+            productos_suplementos_map = {}
+            usuarios_map = {}
+            
+            # Query 1: Todos los productos "varios" de una sola vez
+            if codigos_varios:
+                try:
+                    logging.info(f"📥 Obteniendo {len(codigos_varios)} productos varios...")
+                    response_varios = self.client.table('ca_productos_varios').select(
+                        'codigo_interno, nombre'
+                    ).in_('codigo_interno', list(codigos_varios)).execute()
+                    
+                    for prod in (response_varios.data or []):
+                        productos_varios_map[prod['codigo_interno']] = prod['nombre']
+                    logging.info(f"✅ Obtenidos {len(productos_varios_map)} productos varios")
+                except Exception as e:
+                    logging.warning(f"⚠️ Error obteniendo productos varios: {e}")
+            
+            # Query 2: Todos los suplementos de una sola vez
+            if codigos_suplementos:
+                try:
+                    logging.info(f"📥 Obteniendo {len(codigos_suplementos)} suplementos...")
+                    response_suplementos = self.client.table('ca_suplementos').select(
+                        'codigo_interno, nombre'
+                    ).in_('codigo_interno', list(codigos_suplementos)).execute()
+                    
+                    for prod in (response_suplementos.data or []):
+                        productos_suplementos_map[prod['codigo_interno']] = prod['nombre']
+                    logging.info(f"✅ Obtenidos {len(productos_suplementos_map)} suplementos")
+                except Exception as e:
+                    logging.warning(f"⚠️ Error obteniendo suplementos: {e}")
+            
+            # Query 3: Todos los usuarios de una sola vez
+            if ids_usuarios:
+                try:
+                    logging.info(f"📥 Obteniendo {len(ids_usuarios)} usuarios...")
+                    response_usuarios = self.client.table('usuarios').select(
+                        'id_usuario, nombre_completo'
+                    ).in_('id_usuario', list(ids_usuarios)).execute()
+                    
+                    for usuario in (response_usuarios.data or []):
+                        usuarios_map[usuario['id_usuario']] = usuario['nombre_completo']
+                    logging.info(f"✅ Obtenidos {len(usuarios_map)} usuarios")
+                except Exception as e:
+                    logging.warning(f"⚠️ Error obteniendo usuarios: {e}")
+            
+            # 4. Construir resultado con lookups (sin más queries)
+            logging.info("🔄 Combinando datos...")
             movimientos_completos = []
             
-            # Para cada movimiento, obtener el nombre del producto
             for mov in movimientos:
                 codigo_interno = mov.get('codigo_interno')
                 tipo_producto = mov.get('tipo_producto', 'varios')
                 id_usuario = mov.get('id_usuario')
                 
-                nombre_producto = 'Producto desconocido'
-                nombre_usuario = 'Usuario desconocido'
+                # Lookup del nombre del producto (O(1) en lugar de query)
+                if tipo_producto == 'varios':
+                    nombre_producto = productos_varios_map.get(codigo_interno, 'Producto desconocido')
+                else:
+                    nombre_producto = productos_suplementos_map.get(codigo_interno, 'Producto desconocido')
                 
-                # Obtener nombre del producto según tipo
-                try:
-                    if tipo_producto == 'varios':
-                        response_prod = self.client.table('ca_productos_varios').select('nombre').eq(
-                            'codigo_interno', codigo_interno
-                        ).execute()
-                        if response_prod.data:
-                            nombre_producto = response_prod.data[0].get('nombre', 'Producto desconocido')
-                    else:
-                        response_prod = self.client.table('ca_suplementos').select('nombre').eq(
-                            'codigo_interno', codigo_interno
-                        ).execute()
-                        if response_prod.data:
-                            nombre_producto = response_prod.data[0].get('nombre', 'Producto desconocido')
-                except Exception as e:
-                    logging.warning(f"No se pudo obtener nombre del producto {codigo_interno}: {e}")
+                # Lookup del nombre del usuario (O(1) en lugar de query)
+                nombre_usuario = usuarios_map.get(id_usuario, 'Usuario desconocido') if id_usuario else 'Sin usuario'
                 
-                # Obtener nombre del usuario
-                try:
-                    if id_usuario:
-                        response_user = self.client.table('usuarios').select('nombre_completo').eq(
-                            'id_usuario', id_usuario
-                        ).execute()
-                        if response_user.data:
-                            nombre_usuario = response_user.data[0].get('nombre_completo', 'Usuario desconocido')
-                except Exception as e:
-                    logging.warning(f"No se pudo obtener nombre del usuario {id_usuario}: {e}")
-                
-                # Agregar movimiento completo
                 movimientos_completos.append({
                     'id_movimiento': mov.get('id_movimiento'),
                     'fecha': mov.get('fecha'),
                     'tipo_movimiento': mov.get('tipo_movimiento'),
-                    'codigo_interno': mov.get('codigo_interno'),
-                    'tipo_producto': mov.get('tipo_producto'),
+                    'codigo_interno': codigo_interno,
+                    'tipo_producto': tipo_producto,
                     'cantidad': mov.get('cantidad'),
                     'stock_anterior': mov.get('stock_anterior'),
                     'stock_nuevo': mov.get('stock_nuevo'),
                     'motivo': mov.get('motivo') or '',
-                    'id_usuario': mov.get('id_usuario'),
+                    'id_usuario': id_usuario,
                     'id_venta': mov.get('id_venta'),
                     'nombre_producto': nombre_producto,
                     'nombre_usuario': nombre_usuario
                 })
             
-            logging.info(f"✅ Obtuvieron {len(movimientos_completos)} movimientos completos")
+            logging.info(f"✅ Obtuvieron {len(movimientos_completos)} movimientos completos (optimizado: 3-4 queries en lugar de {len(movimientos)*2})")
             return movimientos_completos
             
         except Exception as e:
@@ -1225,6 +1283,21 @@ class PostgresManager:
             return response.data[0] if response.data else None
         except Exception as e:
             logging.error(f"Error obteniendo producto digital: {e}")
+            return None
+    
+    def get_producto_digital_by_name(self, nombre: str) -> Optional[Dict]:
+        """Obtener producto digital por nombre"""
+        try:
+            if not self.is_connected:
+                self.connect()
+            
+            response = self.client.table('ca_productos_digitales').select('*').eq('nombre', nombre).eq('activo', True).execute()
+            
+            if response.data:
+                return response.data[0]
+            return None
+        except Exception as e:
+            logging.error(f"Error obteniendo producto digital por nombre: {e}")
             return None
     
     def insertar_producto_digital(self, producto_data: Dict) -> Optional[int]:
@@ -1794,6 +1867,61 @@ class PostgresManager:
             logging.error(f"Error confirmando pago: {e}")
             return False
 
+    def registrar_recargo_cobrado(self, recargo_data: Dict) -> Optional[int]:
+        """Registrar un recargo cobrado en la tabla recargos_cobrados"""
+        try:
+            if not self.is_connected:
+                self.connect()
+            
+            recargo_insert = {
+                'id_miembro': recargo_data['id_miembro'],
+                'id_producto_digital': recargo_data['id_producto_digital'],
+                'id_venta': recargo_data.get('id_venta'),
+                'id_detalle_venta': recargo_data.get('id_detalle_venta'),
+                'fecha_aplica': recargo_data['fecha_aplica'],
+                'id_locker': recargo_data.get('id_locker'),
+                'monto': float(recargo_data['monto']),
+                'procesado': recargo_data.get('procesado', True),
+                'pagado': recargo_data.get('pagado', False)
+            }
+            
+            response = self.client.table('recargos_cobrados').insert(recargo_insert).execute()
+            
+            if response.data:
+                id_recargo = response.data[0]['id_recargo']
+                logging.info(f"✅ Recargo cobrado registrado con ID: {id_recargo}")
+                return id_recargo
+            else:
+                logging.error("No se pudo registrar el recargo cobrado")
+                return None
+        except Exception as e:
+            logging.error(f"Error registrando recargo cobrado: {e}")
+            return None
+
+    def actualizar_pago_recargo(self, id_recargo: int, id_venta: int, id_detalle_venta: int) -> bool:
+        """Actualizar el estado de pago de un recargo cobrado cuando se genera la venta digital"""
+        try:
+            if not self.is_connected:
+                self.connect()
+            
+            update_data = {
+                'pagado': True,
+                'id_venta': id_venta,
+                'id_detalle_venta': id_detalle_venta
+            }
+            
+            response = self.client.table('recargos_cobrados').update(update_data).eq('id_recargo', id_recargo).execute()
+            
+            if response.data:
+                logging.info(f"✅ Recargo {id_recargo} marcado como pagado - Venta ID: {id_venta}")
+                return True
+            else:
+                logging.error(f"No se pudo actualizar el pago del recargo {id_recargo}")
+                return False
+        except Exception as e:
+            logging.error(f"Error actualizando pago del recargo {id_recargo}: {e}")
+            return False
+
 
 # Ejemplo de uso
 if __name__ == "__main__":
@@ -1814,6 +1942,14 @@ if __name__ == "__main__":
             print(f"   Rol: {user['rol']}")
         else:
             print("❌ Autenticación fallida")
+        
+        # Ejemplo: Actualizar pago de recargo cuando se genera venta digital
+        # recargo_id = 123  # ID del recargo obtenido al registrar la multa
+        # venta_id = 456    # ID de la venta generada
+        # detalle_venta_id = 789  # ID del detalle de venta
+        # exito = db.actualizar_pago_recargo(recargo_id, venta_id, detalle_venta_id)
+        # if exito:
+        #     print("✅ Recargo marcado como pagado")
         
         # Cerrar conexión
         db.close()

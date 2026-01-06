@@ -155,6 +155,7 @@ class NuevaVentaWindow(QWidget):
         self.productos_table.verticalHeader().setDefaultSectionSize(55)  # Altura de fila para centrar botón
         self.productos_table.setSelectionMode(QTableWidget.NoSelection)
         self.productos_table.setFocusPolicy(Qt.NoFocus)
+        self.productos_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.productos_table.setAlternatingRowColors(True)
         self.productos_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.productos_table.setStyleSheet(
@@ -172,7 +173,8 @@ class NuevaVentaWindow(QWidget):
 
         layout.addWidget(self.productos_table, 1)
 
-        self.cargar_productos()
+        # No cargar productos automáticamente - mostrar mensaje de búsqueda
+        self.mostrar_mensaje_busqueda()
 
         total_tile = InfoTile("TOTAL A PAGAR", None, WindowsPhoneTheme.TILE_GREEN)
         total_tile.main_layout.insertStretch(0)
@@ -181,6 +183,15 @@ class NuevaVentaWindow(QWidget):
         layout.addWidget(total_tile)
 
         return panel
+
+    def mostrar_mensaje_busqueda(self):
+        """Mostrar mensaje indicando que se debe buscar productos"""
+        self.productos_table.setRowCount(1)
+        self.productos_table.setItem(0, 0, QTableWidgetItem(""))
+        self.productos_table.setItem(0, 1, QTableWidgetItem("Escriba en el campo de búsqueda para encontrar productos..."))
+        self.productos_table.setItem(0, 2, QTableWidgetItem(""))
+        self.productos_table.setItem(0, 3, QTableWidgetItem(""))
+        # No agregar botón en la columna de acciones
 
     def _build_cart_panel(self):
         """Construir panel con carrito y acciones."""
@@ -521,7 +532,7 @@ class NuevaVentaWindow(QWidget):
         """Buscar productos por texto"""
         texto = self.search_bar.text().strip()
         if not texto:
-            self.cargar_productos()
+            self.mostrar_mensaje_busqueda()
             return
             
         try:

@@ -8,7 +8,8 @@ Usando componentes reutilizables del sistema de diseño
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QStackedWidget, QFrame,
-    QGridLayout, QScrollArea, QSizePolicy, QDialog
+    QGridLayout, QScrollArea, QSizePolicy, QDialog,
+    QGroupBox
 )
 from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from PySide6.QtGui import QFont, QIcon, QPalette, QColor, QCursor
@@ -1504,58 +1505,80 @@ class MainPOSWindow(QMainWindow):
     def iniciar_monitor_entradas(self):
         """Inicializar y arrancar el monitor de entradas"""
         try:
-            # Crear monitor con PostgreSQL LISTEN/NOTIFY
+            # Crear monitor con Supabase Realtime
             self.monitor_entradas = MonitorEntradas(
                 self.pg_manager,
-                supabase_service=self.supabase_service,
-                pg_host='localhost',  # Cambiar a IP de la mini PC del torniquete
-                pg_port=5432,
-                pg_database='HTF_DB',
-                pg_user='postgres',
-                pg_password='postgres',
-                pg_channel='nueva_entrada_canal'
+                supabase_service=self.supabase_service
             )
-            
+
             # Conectar señal
             self.monitor_entradas.nueva_entrada_detectada.connect(self.mostrar_notificacion_entrada)
-            
+
             # Iniciar monitoreo
             self.monitor_entradas.iniciar()
-            
-            logging.info("Monitor de entradas iniciado correctamente")
-            
+
+            logging.info("Monitor de entradas iniciado exitosamente")
+
+        except Exception as e:
+            logging.error(f"Error iniciando monitor de entradas: {e}")
+            self.monitor_entradas = None
         except Exception as e:
             logging.error(f"Error iniciando monitor de entradas: {e}")
     
     def mostrar_notificacion_entrada(self, entrada_data):
         """Mostrar notificación cuando se detecta una nueva entrada"""
         try:
-            logging.info(f"Mostrando notificación para miembro: {entrada_data['nombres']} {entrada_data['apellido_paterno']}")
-            
+            # Verificar que tenemos los datos básicos
+            if not isinstance(entrada_data, dict):
+                logging.error(f"ERROR: entrada_data no es un diccionario: {type(entrada_data)}")
+                return
+
+            nombres = entrada_data.get('nombres', 'N/A')
+            apellido_paterno = entrada_data.get('apellido_paterno', '')
+            id_entrada = entrada_data.get('id_entrada', 'N/A')
+            logging.info(f"🔔 Nueva entrada detectada - ID: {id_entrada}, Miembro: {nombres} {apellido_paterno}")
+
+            # Usar QTimer.singleShot para diferir la creación al próximo ciclo del event loop
+            # Esto asegura que se ejecute en el hilo principal de manera segura
+            QTimer.singleShot(0, lambda: self._crear_notificacion_segura(entrada_data))
+
+        except Exception as e:
+            logging.error(f"Error en mostrar_notificacion_entrada: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _crear_notificacion_segura(self, entrada_data):
+        """Crear la notificación de manera segura en el hilo principal"""
+        try:
             # Crear ventana de notificación (sin auto-cierre)
             notificacion = NotificacionEntradaWidget(
                 miembro_data=entrada_data,
                 parent=self,
                 duracion=0  # 0 = no auto-cerrar, usuario debe cerrar manualmente
             )
-            
+
             # Posicionar en la esquina superior derecha
             self.posicionar_notificacion(notificacion)
-            
+
             # Conectar señal de cierre
             notificacion.cerrado.connect(lambda: self.remover_notificacion(notificacion))
-            
+
+            # Conectar señal de asignación de cargo
+            notificacion.cargo_asignado.connect(self.manejar_asignacion_cargo)
+
             # Agregar a lista de notificaciones activas
             self.notificaciones_activas.append(notificacion)
-            
+
             # Mostrar
             notificacion.show()
-            
-            logging.info(f"Notificación mostrada para entrada ID: {entrada_data['id_entrada']}")
-            
+
+            logging.info(f"✅ Notificación mostrada para entrada ID: {entrada_data.get('id_entrada', 'N/A')}")
+
         except Exception as e:
-            logging.error(f"Error mostrando notificación de entrada: {e}")
-    
+            logging.error(f"Error creando notificación segura: {e}")
+            import traceback
+            traceback.print_exc()
+
     def posicionar_notificacion(self, notificacion):
         """Posicionar notificación en la pantalla"""
         # Obtener geometría de la ventana principal
@@ -1629,13 +1652,13 @@ class MainPOSWindow(QMainWindow):
                 except Exception as e:
                     logging.error(f"Error verificando turno al cerrar: {e}")
             
-            # Si llegamos aquí, aceptamos el cierre
-            event.accept()
-            
-            # Detener monitor de entradas
+            # PRIMERO: Detener monitor de entradas ANTES de aceptar el cierre
             if self.monitor_entradas:
-                self.monitor_entradas.detener()
-                logging.info("Monitor de entradas detenido")
+                try:
+                    self.monitor_entradas.detener()
+                    logging.info("Monitor de entradas detenido")
+                except Exception as e:
+                    logging.error(f"Error deteniendo monitor de entradas: {e}")
             
             # Cerrar todas las notificaciones activas
             for notificacion in list(self.notificaciones_activas):
@@ -1646,6 +1669,227 @@ class MainPOSWindow(QMainWindow):
             
             self.notificaciones_activas.clear()
             
+            # AHORA sí aceptar el evento de cierre
+            event.accept()
+            
+        except KeyboardInterrupt:
+            # Manejar interrupción del teclado (Ctrl+C)
+            logging.warning("Cierre interrumpido por el usuario (Ctrl+C)")
+            
+            # Forzar detención de threads incluso con interrupción
+            try:
+                if self.monitor_entradas:
+                    self.monitor_entradas.detener()
+                    logging.info("Monitor de entradas detenido (forzado)")
+            except:
+                pass
+                
+            # Cerrar notificaciones
+            try:
+                for notificacion in list(self.notificaciones_activas):
+                    try:
+                        notificacion.close()
+                    except:
+                        pass
+                self.notificaciones_activas.clear()
+            except:
+                pass
+                
+            # Aceptar el cierre incluso con interrupción
+            event.accept()
+                
         except Exception as e:
             logging.error(f"Error en closeEvent: {e}")
             event.accept()
+
+    def _aplicar_multa(self, miembro_data, multa_producto):
+        """Registrar multa por suplantación llamando a la Edge Function de Supabase"""
+        try:
+            import requests
+            from datetime import datetime
+
+            # Preparar datos para la Edge Function
+            edge_function_url = "https://ufnmqxyvrfionysjeiko.supabase.co/functions/v1/create-fine-unauthorized-access"
+
+            # Determinar el tipo de multa basado en el producto
+            fine_type = 'multa_qr'  # Default
+            if multa_producto.get('tipo') == 'multa_llave':
+                fine_type = 'multa_llave'
+
+            payload = {
+                'member_id': miembro_data['id_miembro'],
+                'fine_type': fine_type,
+                'reason': 'Uso no autorizado de cuenta detectado por encargado'
+            }
+
+            # Obtener headers de autenticación de Supabase
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {self.pg_manager.supabase_key}'
+            }
+
+            # Llamar a la Edge Function
+            response = requests.post(edge_function_url, json=payload, headers=headers)
+            response.raise_for_status()  # Lanzar excepción si hay error HTTP
+
+            result = response.json()
+
+            if result.get('success'):
+                fine_id = result.get('fine_id')
+                monto = result.get('monto')
+                logging.info(f"✅ Multa aplicada exitosamente via Edge Function - Recargo ID: {fine_id}")
+
+                # Mostrar mensaje de éxito
+                from ui.components import show_info_dialog
+                show_info_dialog(
+                    self,
+                    "Multa Registrada",
+                    f"Multa por suplantación registrada exitosamente al miembro {miembro_data.get('nombres', '')} {miembro_data.get('apellido_paterno', '')}.\n\nMonto: ${monto:.2f}\n\nSe ha enviado una notificación push al miembro y la multa queda pendiente de pago."
+                )
+            else:
+                logging.error("Error en respuesta de Edge Function")
+                from ui.components import show_error_dialog
+                show_error_dialog(self, "Error", "No se pudo registrar la multa en el sistema.")
+
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error llamando a Edge Function: {e}")
+            from ui.components import show_error_dialog
+            show_error_dialog(self, "Error de Conexión", f"Error conectando con el servidor:\n{str(e)}")
+        except Exception as e:
+            logging.error(f"Error aplicando multa: {e}")
+            import traceback
+            traceback.print_exc()
+            from ui.components import show_error_dialog
+            show_error_dialog(self, "Error", f"Error aplicando la multa:\n{str(e)}")
+
+    def manejar_asignacion_cargo(self, miembro_data):
+        """Manejar la aplicación de multa por suplantación de identidad"""
+        try:
+            logging.info(f"Aplicando multa por suplantación al miembro: {miembro_data.get('nombres', 'N/A')} {miembro_data.get('apellido_paterno', '')}")
+
+            # 1. Buscar el producto digital "multa"
+            multa_producto = self.pg_manager.get_producto_digital_by_name("Multa de Identidad")
+            
+            if not multa_producto:
+                from ui.components import show_error_dialog
+                show_error_dialog(self, "Error", "No se encontró el producto digital 'Multa de Identidad' configurado en el sistema.\n\nPor favor, configure un producto digital llamado 'Multa de Identidad' en la tabla ca_productos_digitales.")
+                return
+            
+            # 2. Mostrar diálogo de confirmación
+            dialog = ConfirmarMultaDialog(
+                miembro_data=miembro_data,
+                multa_producto=multa_producto,
+                parent=self
+            )
+            
+            result = dialog.exec()
+            
+            if result == QDialog.Accepted:
+                # 3. Aplicar la multa - crear venta digital
+                self._aplicar_multa(miembro_data, multa_producto)
+            else:
+                logging.info("Aplicación de multa cancelada por el usuario")
+
+        except Exception as e:
+            logging.error(f"Error manejando aplicación de multa: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+class ConfirmarMultaDialog(QDialog):
+    """Diálogo para confirmar la aplicación de multa por suplantación"""
+    
+    def __init__(self, miembro_data, multa_producto, parent=None):
+        super().__init__(parent)
+        self.miembro_data = miembro_data
+        self.multa_producto = multa_producto
+        
+        self.setWindowTitle("Confirmar Multa por Suplantación")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(400)
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        """Configurar interfaz del diálogo"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        
+        # Título
+        title = QLabel("⚠️ CONFIRMAR MULTA POR SUPLANTACIÓN")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #d32f2f;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        
+        # Información del miembro
+        info_group = QGroupBox("Información del Miembro")
+        info_layout = QVBoxLayout(info_group)
+        
+        nombre_completo = f"{self.miembro_data.get('nombres', '')} {self.miembro_data.get('apellido_paterno', '')} {self.miembro_data.get('apellido_materno', '')}".strip()
+        info_layout.addWidget(QLabel(f"Nombre: {nombre_completo}"))
+        info_layout.addWidget(QLabel(f"ID Miembro: {self.miembro_data.get('id_miembro', 'N/A')}"))
+        info_layout.addWidget(QLabel(f"Teléfono: {self.miembro_data.get('telefono', 'N/A')}"))
+        
+        layout.addWidget(info_group)
+        
+        # Información de la multa
+        multa_group = QGroupBox("Detalles de la Multa")
+        multa_layout = QVBoxLayout(multa_group)
+        
+        multa_layout.addWidget(QLabel(f"Producto: {self.multa_producto.get('nombre', 'Multa')}"))
+        multa_layout.addWidget(QLabel(f"Descripción: {self.multa_producto.get('descripcion', 'Multa por suplantación de identidad')}"))
+        multa_layout.addWidget(QLabel(f"Monto: ${self.multa_producto.get('precio_venta', 0):.2f}"))
+        
+        layout.addWidget(multa_group)
+        
+        # Mensaje de advertencia
+        warning_label = QLabel("⚠️ Esta acción no se puede deshacer.\nLa multa será cobrada inmediatamente.")
+        warning_label.setStyleSheet("color: #f57c00; font-weight: bold;")
+        warning_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(warning_label)
+        
+        layout.addStretch()
+        
+        # Botones
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(10)
+        
+        btn_cancelar = QPushButton("Cancelar")
+        btn_cancelar.setStyleSheet("""
+            QPushButton {
+                padding: 10px 20px;
+                font-size: 14px;
+                background-color: #757575;
+                color: white;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #616161;
+            }
+        """)
+        btn_cancelar.clicked.connect(self.reject)
+        
+        btn_confirmar = QPushButton("✅ Aplicar Multa")
+        btn_confirmar.setStyleSheet("""
+            QPushButton {
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+                background-color: #d32f2f;
+                color: white;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #b71c1c;
+            }
+        """)
+        btn_confirmar.clicked.connect(self.accept)
+        
+        buttons_layout.addWidget(btn_cancelar)
+        buttons_layout.addWidget(btn_confirmar)
+        
+        layout.addLayout(buttons_layout)

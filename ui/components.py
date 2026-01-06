@@ -135,6 +135,102 @@ class TileButton(QPushButton):
         layout.addWidget(text_label)
 
 
+class CompactNavButton(QPushButton):
+    """Botón compacto para navegación (paginación) - Mantiene línea de diseño"""
+    
+    def __init__(self, text="", icon_name=None, color=WindowsPhoneTheme.TILE_BLUE, icon_position="left", parent=None):
+        """
+        Args:
+            text: Texto del botón (ej: "Anterior", "Siguiente")
+            icon_name: Nombre del icono de qtawesome (ej: "fa5s.chevron-left")
+            color: Color del botón (default: TILE_BLUE)
+            icon_position: "left" (icono izquierda) o "right" (icono derecha)
+        """
+        super().__init__(parent)
+        
+        self._color = color
+        self._text = text
+        self._icon_name = icon_name
+        self._icon_position = icon_position
+        
+        # Dimensiones: altura compacta, ancho para acomodar texto
+        self.setMinimumHeight(36)
+        self.setMinimumWidth(130)  # Ancho para texto + icono
+        self.setMaximumHeight(36)
+        self.setCursor(QCursor(Qt.PointingHandCursor))
+        
+        # Layout horizontal: icono + texto (o texto + icono)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 4, 10, 4)
+        layout.setSpacing(6)  # Espaciado entre icono y texto
+        layout.setAlignment(Qt.AlignCenter)
+        
+        # Crear icono y texto
+        icon_label = None
+        text_label = None
+        
+        if icon_name:
+            icon_label = QLabel()
+            icon_label.setAlignment(Qt.AlignCenter)
+            icon_label.setFixedSize(16, 16)
+            try:
+                icon_label.setPixmap(
+                    qta.icon(icon_name, color='white').pixmap(QSize(16, 16))
+                )
+            except:
+                icon_label.setText("◀" if "left" in icon_name.lower() else "▶")
+                icon_label.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, 10, QFont.Bold))
+                icon_label.setStyleSheet("color: white; background: transparent;")
+            icon_label.setObjectName("navIcon")
+            icon_label.setStyleSheet("background: transparent;")
+        
+        if text:
+            text_label = QLabel(text)
+            text_label.setAlignment(Qt.AlignCenter)
+            text_label.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_SMALL, QFont.Bold))
+            text_label.setObjectName("navText")
+            text_label.setStyleSheet("color: white; background: transparent;")
+            text_label.setMinimumWidth(70)
+            text_label.setWordWrap(False)
+        
+        # Agregar elementos en el orden especificado
+        if icon_position == "left":
+            # Orden: Icono | Texto (ej: ◀ Anterior)
+            if icon_label:
+                layout.addWidget(icon_label, 0, Qt.AlignCenter)
+            if text_label:
+                layout.addWidget(text_label, 1, Qt.AlignCenter)
+        else:
+            # Orden: Texto | Icono (ej: Siguiente ▶)
+            if text_label:
+                layout.addWidget(text_label, 1, Qt.AlignCenter)
+            if icon_label:
+                layout.addWidget(icon_label, 0, Qt.AlignCenter)
+        
+        self.setLayout(layout)
+        
+        # Aplicar estilo directamente
+        self.setStyleSheet(f"""
+            CompactNavButton {{
+                background-color: {color};
+                border: none;
+                border-radius: 3px;
+            }}
+            CompactNavButton:hover {{
+                background-color: {color};
+                opacity: 0.85;
+            }}
+            CompactNavButton:pressed {{
+                background-color: {color};
+                opacity: 0.7;
+            }}
+            CompactNavButton:disabled {{
+                background-color: {color};
+                opacity: 0.4;
+            }}
+        """)
+
+
 class InfoTile(QFrame):
     """Tile informativo estilo Windows Phone con icono, título y datos"""
     

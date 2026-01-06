@@ -17,6 +17,21 @@ from ui.components import WindowsPhoneTheme, TileButton, StyledLabel, show_info_
 class EditableCatalogGrid(QWidget):
     """Widget con grid editable para catálogo de productos"""
     
+    # Enum de unidades de medida
+    UNIDADES_MEDIDA = [
+        "",  # Opción vacía
+        "gramos",
+        "kilogramos",
+        "mililitros",
+        "litros",
+        "piezas",
+        "onzas",
+        "libras",
+        "galones",
+        "caja",
+        "paquete"
+    ]
+    
     catalogo_actualizado = Signal()
     
     def __init__(self, postgres_manager, parent=None):
@@ -211,9 +226,9 @@ class EditableCatalogGrid(QWidget):
     def crear_tabla_productos_varios(self):
         """Crear tabla editable para productos varios"""
         tabla = QTableWidget()
-        tabla.setColumnCount(7)
+        tabla.setColumnCount(9)
         tabla.setHorizontalHeaderLabels([
-            "Código", "Nombre", "Descripción", "Precio", "Categoría", "Código Barras", "Activo"
+            "Código", "Nombre", "Descripción", "Precio", "Categoría", "Cantidad", "Unidad", "Código Barras", "Activo"
         ])
         
         # Configurar header
@@ -225,6 +240,8 @@ class EditableCatalogGrid(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         
         tabla.verticalHeader().setVisible(False)
         tabla.verticalHeader().setDefaultSectionSize(60)
@@ -267,9 +284,9 @@ class EditableCatalogGrid(QWidget):
     def crear_tabla_suplementos(self):
         """Crear tabla editable para suplementos"""
         tabla = QTableWidget()
-        tabla.setColumnCount(7)
+        tabla.setColumnCount(9)
         tabla.setHorizontalHeaderLabels([
-            "Código", "Nombre", "Marca", "Tipo", "Precio", "Código Barras", "Activo"
+            "Código", "Nombre", "Marca", "Tipo", "Precio", "Cantidad", "Unidad", "Código Barras", "Activo"
         ])
         
         # Configurar header
@@ -281,6 +298,8 @@ class EditableCatalogGrid(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         
         tabla.verticalHeader().setVisible(False)
         tabla.verticalHeader().setDefaultSectionSize(60)
@@ -401,12 +420,33 @@ class EditableCatalogGrid(QWidget):
             # Categoría (editable)
             tabla.setItem(row, 4, QTableWidgetItem(str(producto.get('categoria', ''))))
             
+            # Cantidad de Medida (editable)
+            cantidad = producto.get('cantidad_medida', '')
+            item_cantidad = QTableWidgetItem(f"{float(cantidad):.2f}" if cantidad else "")
+            tabla.setItem(row, 5, item_cantidad)
+            
+            # Unidad de Medida (editable - Combo)
+            combo_unidad = QComboBox()
+            combo_unidad.addItems(self.UNIDADES_MEDIDA)
+            valor_actual = str(producto.get('unidad_medida', '') or '')
+            if valor_actual in self.UNIDADES_MEDIDA:
+                combo_unidad.setCurrentText(valor_actual)
+            combo_unidad.currentTextChanged.connect(lambda text, r=row: self._on_combo_changed(r, 6, text))
+            combo_unidad.setStyleSheet(f"""
+                QComboBox {{
+                    padding: 4px;
+                    border: none;
+                    background-color: white;
+                }}
+            """)
+            tabla.setCellWidget(row, 6, combo_unidad)
+            
             # Código Barras (editable)
-            tabla.setItem(row, 5, QTableWidgetItem(str(producto.get('codigo_barras', '') or '')))
+            tabla.setItem(row, 7, QTableWidgetItem(str(producto.get('codigo_barras', '') or '')))
             
             # Activo (editable)
             item_activo = QTableWidgetItem("Sí" if producto.get('activo', True) else "No")
-            tabla.setItem(row, 6, item_activo)
+            tabla.setItem(row, 8, item_activo)
     
     def poblar_tabla_suplementos(self):
         """Poblar tabla de suplementos"""
@@ -434,12 +474,68 @@ class EditableCatalogGrid(QWidget):
             item_precio = QTableWidgetItem(f"{float(suplemento.get('precio_venta', 0)):.2f}")
             tabla.setItem(row, 4, item_precio)
             
+            # Cantidad de Medida (editable)
+            cantidad = suplemento.get('cantidad_medida', '')
+            item_cantidad = QTableWidgetItem(f"{float(cantidad):.2f}" if cantidad else "")
+            tabla.setItem(row, 5, item_cantidad)
+            
+            # Unidad de Medida (editable - Combo)
+            combo_unidad = QComboBox()
+            combo_unidad.addItems(self.UNIDADES_MEDIDA)
+            valor_actual = str(suplemento.get('unidad_medida', '') or '')
+            if valor_actual in self.UNIDADES_MEDIDA:
+                combo_unidad.setCurrentText(valor_actual)
+            combo_unidad.currentTextChanged.connect(lambda text, r=row: self._on_combo_changed(r, 6, text))
+            combo_unidad.setStyleSheet(f"""
+                QComboBox {{
+                    padding: 4px;
+                    border: none;
+                    background-color: white;
+                }}
+            """)
+            tabla.setCellWidget(row, 6, combo_unidad)
+            
             # Código Barras (editable)
-            tabla.setItem(row, 5, QTableWidgetItem(str(suplemento.get('codigo_barras', '') or '')))
+            tabla.setItem(row, 7, QTableWidgetItem(str(suplemento.get('codigo_barras', '') or '')))
             
             # Activo (editable)
             item_activo = QTableWidgetItem("Sí" if suplemento.get('activo', True) else "No")
-            tabla.setItem(row, 6, item_activo)
+            tabla.setItem(row, 8, item_activo)
+    
+    def _on_combo_changed(self, row, col, text):
+        """Manejar cambio en un QComboBox de unidad"""
+        tabla = self.tabla_varios if self.tab_widget.currentIndex() == 0 else self.tabla_suplementos
+        codigo_item = tabla.item(row, 0)
+        
+        if codigo_item:
+            codigo = codigo_item.text()
+            
+            # Inicializar entrada si no existe
+            if codigo not in self.cambios_pendientes:
+                self.cambios_pendientes[codigo] = {}
+            
+            # Determinar el nombre del campo
+            if self.tab_widget.currentIndex() == 0:  # Productos varios
+                campos = ['codigo_interno', 'nombre', 'descripcion', 'precio_venta', 'categoria', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
+            else:  # Suplementos
+                campos = ['codigo_interno', 'nombre', 'marca', 'tipo', 'precio_venta', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
+            
+            if col < len(campos):
+                campo = campos[col]
+                
+                # Resaltar celda modificada
+                widget = tabla.cellWidget(row, col)
+                if widget:
+                    widget.setStyleSheet(f"""
+                        QComboBox {{
+                            padding: 4px;
+                            border: 2px solid #ff8c00;
+                            background-color: #fff3cd;
+                        }}
+                    """)
+                
+                self.cambios_pendientes[codigo][campo] = text
+                self.actualizar_label_cambios()
     
     def on_item_changed(self, item):
         """Manejar cambio en un item de la tabla"""
@@ -454,9 +550,9 @@ class EditableCatalogGrid(QWidget):
             
             # Determinar el nombre del campo según la tabla
             if self.tab_widget.currentIndex() == 0:  # Productos varios
-                campos = ['codigo_interno', 'nombre', 'descripcion', 'precio_venta', 'categoria', 'codigo_barras', 'activo']
+                campos = ['codigo_interno', 'nombre', 'descripcion', 'precio_venta', 'categoria', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
             else:  # Suplementos
-                campos = ['codigo_interno', 'nombre', 'marca', 'tipo', 'precio_venta', 'codigo_barras', 'activo']
+                campos = ['codigo_interno', 'nombre', 'marca', 'tipo', 'precio_venta', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
             
             if col < len(campos):
                 campo = campos[col]
@@ -511,6 +607,10 @@ class EditableCatalogGrid(QWidget):
                     # Convertir precio a float
                     if 'precio_venta' in cambios:
                         cambios['precio_venta'] = float(cambios['precio_venta'])
+                    
+                    # Convertir cantidad_medida a float (puede ser None/vacío)
+                    if 'cantidad_medida' in cambios:
+                        cambios['cantidad_medida'] = float(cambios['cantidad_medida']) if cambios['cantidad_medida'].strip() else None
                     
                     # Actualizar en base de datos
                     self.pg_manager.client.table(tabla_nombre).update(cambios).eq('codigo_interno', codigo).execute()

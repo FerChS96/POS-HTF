@@ -18,6 +18,7 @@ import logging
 from ui.components import (
     WindowsPhoneTheme,
     TileButton,
+    CompactNavButton,
     create_page_layout,
     ContentPanel,
     StyledLabel,
@@ -35,19 +36,42 @@ class MovimientosLoaderThread(QThread):
     movimientos_loaded = Signal(list)
     error_occurred = Signal(str)
     
-    def __init__(self, pg_manager):
+    def __init__(self, pg_manager, limite=50):
         super().__init__()
         self.pg_manager = pg_manager
+        self.limite = limite
+        self._is_running = True
+        # Marcar thread como daemon para que no bloquee la aplicación
+        self.setTerminationEnabled(True)
     
     def run(self):
         """Cargar movimientos desde la base de datos en un hilo separado"""
         try:
+            if not self._is_running:
+                logging.info("Thread cancelado antes de iniciar")
+                return
+            
+            logging.info(f"Cargando movimientos (límite: {self.limite})...")
             # Usar el método de postgres_manager que retorna movimientos completos
-            rows = self.pg_manager.obtener_movimientos_completos(limite=1000)
-            self.movimientos_loaded.emit(rows)
+            rows = self.pg_manager.obtener_movimientos_completos(limite=self.limite)
+            
+            if self._is_running:  # Verificar si el thread aún debe ejecutarse
+                logging.info(f"✅ Thread obtuvo {len(rows)} registros")
+                self.movimientos_loaded.emit(rows)
+            else:
+                logging.info("Thread cancelado antes de emitir datos")
                 
         except Exception as e:
-            self.error_occurred.emit(str(e))
+            if self._is_running:
+                logging.error(f"Error en thread de movimientos: {e}")
+                self.error_occurred.emit(str(e))
+            else:
+                logging.info(f"Error en thread cancelado: {e}")
+    
+    def stop(self):
+        """Detener el thread de forma segura"""
+        logging.info("🛑 Señal de parada enviada al thread")
+        self._is_running = False
 
 
 class HistorialMovimientosWindow(QWidget):
@@ -63,9 +87,37 @@ class HistorialMovimientosWindow(QWidget):
         self.movimientos_data = []
         self.movimientos_filtrados = []
         self.loader_thread = None
+        self.pagina_actual = 0  # Para paginación
+        self.items_por_pagina = 50
+        self.total_movimientos_disponibles = 0
+        self._is_visible = True  # Rastrear visibilidad
         
         self.setup_ui()
         self.cargar_movimientos()
+    
+    def hideEvent(self, event):
+        """Evento cuando el widget se oculta (cambio de pestaña)"""
+        self._is_visible = False
+        self.detener_carga()
+        super().hideEvent(event)
+    
+    def showEvent(self, event):
+        """Evento cuando el widget se muestra nuevamente"""
+        self._is_visible = True
+        super().showEvent(event)
+    
+    def detener_carga(self):
+        """Detener cualquier carga en progreso - Llamado cuando se cambia de ventana"""
+        try:
+            if self.loader_thread and self.loader_thread.isRunning():
+                logging.info("🛑 Deteniendo carga de movimientos (ventana oculta)")
+                self.loader_thread.stop()
+                self.loader_thread.quit()
+                if not self.loader_thread.wait(500):
+                    self.loader_thread.terminate()
+                    self.loader_thread.wait(500)
+        except Exception as e:
+            logging.error(f"Error al detener carga: {e}")
     
     def setup_ui(self):
         """Configurar interfaz del historial"""
@@ -86,7 +138,7 @@ class HistorialMovimientosWindow(QWidget):
         table_panel = self.create_table_panel()
         content_layout.addWidget(table_panel)
         
-        # Panel de información y botones
+        # Panel de información y botones (incluye paginación integrada)
         info_buttons_panel = self.create_info_buttons_panel()
         content_layout.addWidget(info_buttons_panel)
         
@@ -232,29 +284,118 @@ class HistorialMovimientosWindow(QWidget):
         table_layout.addWidget(self.movimientos_table)
         return table_panel
     
+    def create_pagination_panel(self):
+        """Crear el panel de paginación INTEGRADO en la fila inferior"""
+        # Nota: Este método ya no crea un panel separado
+        # Los botones se integran en create_info_buttons_panel
+        pass  # Los botones se crean en create_info_buttons_panel
+    
+    def actualizar_pagination_buttons(self):
+        """Actualizar estado de botones de paginación e info"""
+        total_paginas = (len(self.movimientos_filtrados) + self.items_por_pagina - 1) // self.items_por_pagina
+        
+        self.btn_pagina_anterior.setEnabled(self.pagina_actual > 0)
+        self.btn_proxima_pagina.setEnabled(self.pagina_actual < total_paginas - 1)
+        
+        inicio = self.pagina_actual * self.items_por_pagina + 1
+        fin = min((self.pagina_actual + 1) * self.items_por_pagina, len(self.movimientos_filtrados))
+        total_filtrados = len(self.movimientos_filtrados)
+        total_disponibles = len(self.movimientos_data)  # Total de todos los movimientos cargados
+        
+        # Actualizar label con información completa de paginación
+        if total_filtrados > 0:
+            if total_paginas > 1:
+                # Mostrar info completa: qué se muestra + página actual + totales
+                self.info_label.setText(
+                    f"Página {self.pagina_actual + 1}/{total_paginas} | Mostrando {inicio}-{fin} de {total_filtrados} | Total disponible: {total_disponibles}"
+                )
+            else:
+                # Solo una página pero mostrar total disponible
+                self.info_label.setText(f"Total: {total_filtrados} movimientos (de {total_disponibles} disponibles)")
+        else:
+            self.info_label.setText("No hay registros")
+    
+    def pagina_anterior(self):
+        """Ir a la página anterior"""
+        if self.pagina_actual > 0:
+            self.pagina_actual -= 1
+            self.mostrar_pagina_actual()
+    
+    def proxima_pagina(self):
+        """Ir a la siguiente página"""
+        total_paginas = (len(self.movimientos_filtrados) + self.items_por_pagina - 1) // self.items_por_pagina
+        if self.pagina_actual < total_paginas - 1:
+            self.pagina_actual += 1
+            self.mostrar_pagina_actual()
+    
+    def mostrar_pagina_actual(self):
+        """Mostrar la página actual de movimientos"""
+        inicio = self.pagina_actual * self.items_por_pagina
+        fin = inicio + self.items_por_pagina
+        movimientos_pagina = self.movimientos_filtrados[inicio:fin]
+        self.mostrar_movimientos(movimientos_pagina, mostrar_paginacion=True)
+    
     def create_info_buttons_panel(self):
-        """Crear el panel de información y botones"""
+        """Crear el panel de información y botones con paginación integrada"""
         info_buttons_panel = ContentPanel()
         info_buttons_layout = QHBoxLayout(info_buttons_panel)
+        info_buttons_layout.setSpacing(8)
         
-        # Etiqueta de información
+        # Etiqueta de información (con paginación integrada)
         self.info_label = StyledLabel("", size=WindowsPhoneTheme.FONT_SIZE_SMALL)
         info_buttons_layout.addWidget(self.info_label, stretch=1)
         
-        # Botones de acción
+        # Separador visual
+        separator = QFrame()
+        separator.setFrameShape(QFrame.VLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        separator.setMaximumWidth(1)
+        info_buttons_layout.addWidget(separator)
+        
+        # Botones de paginación COMPACTOS con diseño consistente
+        # Botón anterior: Icono (◀) + Texto
+        self.btn_pagina_anterior = CompactNavButton(
+            "Anterior", 
+            "fa5s.chevron-left",
+            WindowsPhoneTheme.TILE_BLUE,
+            icon_position="left"  # Icono a la izquierda
+        )
+        self.btn_pagina_anterior.setToolTip("Página anterior")
+        self.btn_pagina_anterior.clicked.connect(self.pagina_anterior)
+        info_buttons_layout.addWidget(self.btn_pagina_anterior)
+        
+        # Botón siguiente: Texto + Icono (▶)
+        self.btn_proxima_pagina = CompactNavButton(
+            "Siguiente",
+            "fa5s.chevron-right",
+            WindowsPhoneTheme.TILE_BLUE,
+            icon_position="right"  # Icono a la derecha
+        )
+        self.btn_proxima_pagina.setToolTip("Página siguiente")
+        self.btn_proxima_pagina.clicked.connect(self.proxima_pagina)
+        info_buttons_layout.addWidget(self.btn_proxima_pagina)
+        
+        # Separador visual
+        separator2 = QFrame()
+        separator2.setFrameShape(QFrame.VLine)
+        separator2.setFrameShadow(QFrame.Sunken)
+        separator2.setMaximumWidth(1)
+        info_buttons_layout.addWidget(separator2)
+        
+        # Botones de acción principales
         btn_exportar = TileButton("Exportar Excel", "fa5s.file-excel", WindowsPhoneTheme.TILE_GREEN)
         btn_exportar.clicked.connect(self.exportar_excel)
-        btn_exportar.setMaximumWidth(200)
+        btn_exportar.setMaximumWidth(180)
         info_buttons_layout.addWidget(btn_exportar)
         
         btn_actualizar = TileButton("Actualizar", "fa5s.sync", WindowsPhoneTheme.TILE_BLUE)
         btn_actualizar.clicked.connect(self.cargar_movimientos)
-        btn_actualizar.setMaximumWidth(200)
+        btn_actualizar.setMaximumWidth(150)
         info_buttons_layout.addWidget(btn_actualizar)
         
         btn_volver = TileButton("Volver", "fa5s.arrow-left", WindowsPhoneTheme.TILE_RED)
         btn_volver.clicked.connect(self.cerrar_solicitado.emit)
-        btn_volver.setMaximumWidth(200)
+        btn_volver.setMaximumWidth(120)
         info_buttons_layout.addWidget(btn_volver)
         
         return info_buttons_panel
@@ -262,20 +403,29 @@ class HistorialMovimientosWindow(QWidget):
     def cargar_movimientos(self):
         """Cargar todos los movimientos desde la base de datos de forma asíncrona"""
         try:
+            # Si no estamos visibles, no cargar
+            if not self._is_visible:
+                return
+                
             # Mostrar indicador de carga
             self.info_label.setText("Cargando movimientos...")
             self.movimientos_table.setRowCount(0)
+            self.pagina_actual = 0  # Resetear paginación
             
             # Detener hilo anterior si existe
             if self.loader_thread and self.loader_thread.isRunning():
+                self.loader_thread.stop()  # Señalizar al thread que se detenga
                 self.loader_thread.quit()
-                self.loader_thread.wait(1000)  # Esperar hasta 1 segundo
+                if not self.loader_thread.wait(1000):  # Esperar hasta 1 segundo
+                    self.loader_thread.terminate()
+                    self.loader_thread.wait()
             
-            # Crear y ejecutar hilo de carga
-            self.loader_thread = MovimientosLoaderThread(self.pg_manager)
-            self.loader_thread.movimientos_loaded.connect(self.procesar_datos_movimientos)
-            self.loader_thread.error_occurred.connect(self.mostrar_error_carga)
-            self.loader_thread.finished.connect(self.on_thread_finished)
+            # Crear y ejecutar hilo de carga (cargar 500 para tener más datos disponibles)
+            self.loader_thread = MovimientosLoaderThread(self.pg_manager, limite=500)
+            self.loader_thread.movimientos_loaded.connect(self.procesar_datos_movimientos, Qt.QueuedConnection)
+            self.loader_thread.error_occurred.connect(self.mostrar_error_carga, Qt.QueuedConnection)
+            self.loader_thread.finished.connect(self.on_thread_finished, Qt.QueuedConnection)
+            logging.info("Iniciando carga de movimientos...")
             self.loader_thread.start()
             
         except Exception as e:
@@ -294,6 +444,11 @@ class HistorialMovimientosWindow(QWidget):
     def procesar_datos_movimientos(self, rows):
         """Procesar los datos de movimientos cargados desde la base de datos"""
         try:
+            # Verificar que la ventana aún está visible
+            if not self._is_visible:
+                logging.info("Descartando datos - ventana no está visible")
+                return
+            
             self.movimientos_data = []
             
             for row in rows:
@@ -314,19 +469,25 @@ class HistorialMovimientosWindow(QWidget):
                 })
             
             self.aplicar_filtros()
-            logging.info(f"Movimientos cargados: {len(self.movimientos_data)}")
+            logging.info(f"✅ Obtuvieron {len(self.movimientos_data)} movimientos completos")
             
         except Exception as e:
             logging.error(f"Error procesando datos de movimientos: {e}")
-            show_error_dialog(
-                self,
-                "Error al procesar datos",
-                "No se pudieron procesar los datos de movimientos",
-                detail=str(e)
-            )
+            if self._is_visible:
+                show_error_dialog(
+                    self,
+                    "Error al procesar datos",
+                    "No se pudieron procesar los datos de movimientos",
+                    detail=str(e)
+                )
     
     def mostrar_error_carga(self, error_msg):
         """Mostrar mensaje de error al cargar movimientos"""
+        # Verificar que la ventana aún está visible
+        if not self._is_visible:
+            logging.info("Error descartado - ventana no está visible")
+            return
+            
         logging.error(f"Error cargando movimientos: {error_msg}")
         show_error_dialog(
             self,
@@ -351,9 +512,9 @@ class HistorialMovimientosWindow(QWidget):
                 # Filtro de texto
                 if texto_busqueda:
                     if not any([
-                        texto_busqueda in mov['codigo_interno'].lower(),
-                        texto_busqueda in mov['nombre_producto'].lower(),
-                        texto_busqueda in mov['nombre_usuario'].lower(),
+                        texto_busqueda in str(mov['codigo_interno']).lower(),
+                        texto_busqueda in str(mov['nombre_producto']).lower(),
+                        texto_busqueda in str(mov['nombre_usuario']).lower(),
                         texto_busqueda in (mov['motivo'] or '').lower()
                     ]):
                         continue
@@ -363,20 +524,34 @@ class HistorialMovimientosWindow(QWidget):
                     if mov['tipo_movimiento'].lower() != tipo_seleccionado.lower():
                         continue
                 
-                # Filtro de fecha
-                fecha_mov = mov['fecha'].date() if isinstance(mov['fecha'], datetime) else mov['fecha']
+                # Filtro de fecha - Convertir fecha_mov a date object si es datetime
+                fecha_mov = mov['fecha']
+                if isinstance(fecha_mov, datetime):
+                    fecha_mov = fecha_mov.date()
+                elif isinstance(fecha_mov, str):
+                    try:
+                        # Si es string, intentar parsearlo
+                        fecha_mov = datetime.fromisoformat(fecha_mov.replace('Z', '+00:00')).date()
+                    except:
+                        continue
+                
+                # Ahora comparar date con date
                 if not (fecha_desde <= fecha_mov <= fecha_hasta):
                     continue
                 
                 self.movimientos_filtrados.append(mov)
             
-            self.mostrar_movimientos(self.movimientos_filtrados)
+            # Resetear paginación cuando se aplican nuevos filtros
+            self.pagina_actual = 0
+            self.mostrar_pagina_actual()
             
         except Exception as e:
             logging.error(f"Error aplicando filtros: {e}")
-            self.mostrar_movimientos(self.movimientos_data)
+            self.movimientos_filtrados = self.movimientos_data
+            self.pagina_actual = 0
+            self.mostrar_pagina_actual()
     
-    def mostrar_movimientos(self, movimientos):
+    def mostrar_movimientos(self, movimientos, mostrar_paginacion=False):
         """Mostrar movimientos en la tabla"""
         try:
             self.movimientos_table.setRowCount(0)
@@ -407,10 +582,10 @@ class HistorialMovimientosWindow(QWidget):
                 self.movimientos_table.setItem(row, 1, item_tipo)
                 
                 # Código interno
-                self.movimientos_table.setItem(row, 2, QTableWidgetItem(mov['codigo_interno']))
+                self.movimientos_table.setItem(row, 2, QTableWidgetItem(str(mov['codigo_interno'])))
                 
                 # Nombre producto
-                self.movimientos_table.setItem(row, 3, QTableWidgetItem(mov['nombre_producto']))
+                self.movimientos_table.setItem(row, 3, QTableWidgetItem(str(mov['nombre_producto'])))
                 
                 # Cantidad
                 cantidad = mov['cantidad']
@@ -433,23 +608,22 @@ class HistorialMovimientosWindow(QWidget):
                 self.movimientos_table.setItem(row, 6, item_stock_nuevo)
                 
                 # Motivo
-                self.movimientos_table.setItem(row, 7, QTableWidgetItem(mov['motivo']))
+                self.movimientos_table.setItem(row, 7, QTableWidgetItem(str(mov['motivo'] or '')))
                 
                 # Usuario
-                item_usuario = QTableWidgetItem(mov['nombre_usuario'])
+                item_usuario = QTableWidgetItem(str(mov['nombre_usuario']))
                 item_usuario.setTextAlignment(Qt.AlignCenter)
                 self.movimientos_table.setItem(row, 8, item_usuario)
             
-            # Actualizar información
-            total_movimientos = len(movimientos)
-            total_general = len(self.movimientos_data)
-            
-            if total_movimientos == total_general:
-                self.info_label.setText(f"Total de movimientos: {total_movimientos}")
+            # Actualizar información y paginación
+            if mostrar_paginacion:
+                self.actualizar_pagination_buttons()
             else:
-                self.info_label.setText(f"Mostrando {total_movimientos} de {total_general} movimientos")
+                # No mostrar paginación en label, solo contar
+                total_movimientos = len(movimientos)
+                # (El info_label se actualiza en actualizar_pagination_buttons cuando se llama desde mostrar_pagina_actual)
             
-            logging.info(f"Mostrando {total_movimientos} movimientos en tabla")
+            logging.info(f"Mostrando {len(movimientos)} movimientos en tabla")
             
         except Exception as e:
             logging.error(f"Error mostrando movimientos: {e}")
@@ -506,9 +680,9 @@ class HistorialMovimientosWindow(QWidget):
             for mov in self.movimientos_data:
                 if texto_busqueda:
                     if not any([
-                        texto_busqueda in mov['codigo_interno'].lower(),
-                        texto_busqueda in mov['nombre_producto'].lower(),
-                        texto_busqueda in mov['nombre_usuario'].lower(),
+                        texto_busqueda in str(mov['codigo_interno']).lower(),
+                        texto_busqueda in str(mov['nombre_producto']).lower(),
+                        texto_busqueda in str(mov['nombre_usuario']).lower(),
                         texto_busqueda in (mov['motivo'] or '').lower()
                     ]):
                         continue
@@ -517,7 +691,18 @@ class HistorialMovimientosWindow(QWidget):
                     if mov['tipo_movimiento'].lower() != tipo_seleccionado.lower():
                         continue
                 
-                fecha_mov = mov['fecha'].date() if isinstance(mov['fecha'], datetime) else mov['fecha']
+                # Convertir fecha_mov a date object si es datetime
+                fecha_mov = mov['fecha']
+                if isinstance(fecha_mov, datetime):
+                    fecha_mov = fecha_mov.date()
+                elif isinstance(fecha_mov, str):
+                    try:
+                        # Si es string, intentar parsearlo
+                        fecha_mov = datetime.fromisoformat(fecha_mov.replace('Z', '+00:00')).date()
+                    except:
+                        continue
+                
+                # Ahora comparar date con date
                 if not (fecha_desde <= fecha_mov <= fecha_hasta):
                     continue
                 
@@ -579,21 +764,46 @@ class HistorialMovimientosWindow(QWidget):
             )
     
     def closeEvent(self, event):
-        """Evento al cerrar la ventana"""
-        # Detener hilo de carga si está activo
-        if self.loader_thread and self.loader_thread.isRunning():
-            self.loader_thread.quit()
-            if not self.loader_thread.wait(2000):  # Esperar hasta 2 segundos
-                self.loader_thread.terminate()
-                self.loader_thread.wait()
-            
-        super().closeEvent(event)
+        """Evento al cerrar la ventana - Limpiar threads correctamente"""
+        try:
+            self._is_visible = False
+            # Detener y limpiar el thread de forma segura
+            if self.loader_thread:
+                if self.loader_thread.isRunning():
+                    logging.info("🛑 Deteniendo thread durante closeEvent")
+                    self.loader_thread.stop()  # Señalizar al thread que se detenga
+                    # Desconectar todas las señales
+                    try:
+                        self.loader_thread.movimientos_loaded.disconnect()
+                    except:
+                        pass
+                    try:
+                        self.loader_thread.error_occurred.disconnect()
+                    except:
+                        pass
+                    try:
+                        self.loader_thread.finished.disconnect()
+                    except:
+                        pass
+                    
+                    self.loader_thread.quit()
+                    if not self.loader_thread.wait(1500):  # Esperar hasta 1.5 segundos
+                        self.loader_thread.terminate()
+                        self.loader_thread.wait()
+                self.loader_thread = None
+        except Exception as e:
+            logging.error(f"Error al cerrar ventana de movimientos: {e}")
+        finally:
+            event.accept()
     
     def __del__(self):
         """Destructor para limpiar el thread"""
         try:
+            if hasattr(self, '_is_visible'):
+                self._is_visible = False
             if hasattr(self, 'loader_thread') and self.loader_thread:
                 if self.loader_thread.isRunning():
+                    self.loader_thread.stop()
                     self.loader_thread.quit()
                     self.loader_thread.wait(1000)
         except (RuntimeError, AttributeError):

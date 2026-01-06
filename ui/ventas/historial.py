@@ -18,6 +18,7 @@ import qtawesome as qta
 from ui.components import (
     WindowsPhoneTheme,
     TileButton,
+    CompactNavButton,
     create_page_layout,
     ContentPanel,
     StyledLabel,
@@ -39,6 +40,9 @@ class HistorialVentasWindow(QWidget):
         self.supabase_service = supabase_service
         self.user_data = user_data
         self.ventas_data = []  # Almacenar todas las ventas cargadas
+        self.ventas_filtradas = []  # Ventas después de aplicar filtros
+        self.pagina_actual = 0
+        self.items_por_pagina = 50
         
         # Timer para detectar entrada del escáner
         self.scanner_timer = QTimer()
@@ -73,12 +77,8 @@ class HistorialVentasWindow(QWidget):
         # Tabla
         self.create_history_table(content_layout)
         
-        # Panel de información
-        info_panel = ContentPanel()
-        info_layout = QHBoxLayout(info_panel)
-        self.info_label = StyledLabel("", size=WindowsPhoneTheme.FONT_SIZE_SMALL)
-        info_layout.addWidget(self.info_label, stretch=1)
-        content_layout.addWidget(info_panel)
+        # Panel de información y paginación
+        self.create_info_buttons_panel(content_layout)
         
         # Botones
         buttons_layout = QHBoxLayout()
@@ -194,6 +194,87 @@ class HistorialVentasWindow(QWidget):
         
         parent_layout.addWidget(self.history_table)
     
+    def create_info_buttons_panel(self, parent_layout):
+        """Crear panel de información con paginación integrada"""
+        info_panel = ContentPanel()
+        info_layout = QHBoxLayout(info_panel)
+        info_layout.setSpacing(8)
+        
+        # Etiqueta de información (con paginación integrada)
+        self.info_label = StyledLabel("", size=WindowsPhoneTheme.FONT_SIZE_SMALL)
+        info_layout.addWidget(self.info_label, stretch=1)
+        
+        # Botones de paginación
+        self.btn_pagina_anterior = CompactNavButton(
+            "Anterior",
+            "fa5s.chevron-left",
+            WindowsPhoneTheme.TILE_BLUE,
+            icon_position="left"
+        )
+        self.btn_pagina_anterior.setToolTip("Página anterior")
+        self.btn_pagina_anterior.clicked.connect(self.pagina_anterior)
+        info_layout.addWidget(self.btn_pagina_anterior)
+        
+        self.btn_proxima_pagina = CompactNavButton(
+            "Siguiente",
+            "fa5s.chevron-right",
+            WindowsPhoneTheme.TILE_BLUE,
+            icon_position="right"
+        )
+        self.btn_proxima_pagina.setToolTip("Página siguiente")
+        self.btn_proxima_pagina.clicked.connect(self.proxima_pagina)
+        info_layout.addWidget(self.btn_proxima_pagina)
+        
+        parent_layout.addWidget(info_panel)
+    
+    def actualizar_pagination_buttons(self):
+        """Actualizar estado de botones de paginación e info"""
+        total_paginas = (len(self.ventas_filtradas) + self.items_por_pagina - 1) // self.items_por_pagina
+        
+        self.btn_pagina_anterior.setEnabled(self.pagina_actual > 0)
+        self.btn_proxima_pagina.setEnabled(self.pagina_actual < total_paginas - 1)
+        
+        inicio = self.pagina_actual * self.items_por_pagina + 1
+        fin = min((self.pagina_actual + 1) * self.items_por_pagina, len(self.ventas_filtradas))
+        total_filtrados = len(self.ventas_filtradas)
+        total_disponibles = len(self.ventas_data)
+        
+        # Actualizar label con información completa
+        if total_filtrados > 0:
+            if total_paginas > 1:
+                total_ventas = sum(v.get('total', 0) for v in self.ventas_filtradas)
+                self.info_label.setText(
+                    f"Página {self.pagina_actual + 1}/{total_paginas} | Mostrando {inicio}-{fin} de {total_filtrados} | "
+                    f"Total: ${total_ventas:,.2f} | Disponibles: {total_disponibles}"
+                )
+            else:
+                total_ventas = sum(v.get('total', 0) for v in self.ventas_filtradas)
+                self.info_label.setText(
+                    f"Total: {total_filtrados} ventas | ${total_ventas:,.2f} | Disponibles: {total_disponibles}"
+                )
+        else:
+            self.info_label.setText("No hay registros")
+    
+    def pagina_anterior(self):
+        """Ir a la página anterior"""
+        if self.pagina_actual > 0:
+            self.pagina_actual -= 1
+            self.mostrar_pagina_actual()
+    
+    def proxima_pagina(self):
+        """Ir a la siguiente página"""
+        total_paginas = (len(self.ventas_filtradas) + self.items_por_pagina - 1) // self.items_por_pagina
+        if self.pagina_actual < total_paginas - 1:
+            self.pagina_actual += 1
+            self.mostrar_pagina_actual()
+    
+    def mostrar_pagina_actual(self):
+        """Mostrar la página actual de ventas"""
+        inicio = self.pagina_actual * self.items_por_pagina
+        fin = inicio + self.items_por_pagina
+        ventas_pagina = self.ventas_filtradas[inicio:fin]
+        self.actualizar_tabla(ventas_pagina, mostrar_paginacion=True)
+    
     def on_search_changed(self):
         """Reiniciar timer cuando cambia el texto de búsqueda"""
         self.scanner_timer.start()
@@ -258,19 +339,19 @@ class HistorialVentasWindow(QWidget):
             usuario_filtro = self.usuario_combo.currentText()
             
             # Filtrar datos
-            ventas_filtradas = self.ventas_data
+            self.ventas_filtradas = self.ventas_data
             
             # Filtro por usuario
             if usuario_filtro and usuario_filtro != "Todos":
-                ventas_filtradas = [
-                    v for v in ventas_filtradas 
+                self.ventas_filtradas = [
+                    v for v in self.ventas_filtradas 
                     if v.get('usuarios', {}).get('nombre_completo', '') == usuario_filtro
                 ]
             
             # Filtro por búsqueda de texto
             if search_text:
-                ventas_filtradas = [
-                    v for v in ventas_filtradas
+                self.ventas_filtradas = [
+                    v for v in self.ventas_filtradas
                     if (
                         search_text in str(v.get('id_venta', '')).lower() or
                         search_text in str(v.get('total', '')).lower() or
@@ -278,20 +359,14 @@ class HistorialVentasWindow(QWidget):
                     )
                 ]
             
-            # Actualizar tabla
-            self.actualizar_tabla(ventas_filtradas)
-            
-            # Actualizar info
-            total_ventas = sum(v.get('total', 0) for v in ventas_filtradas)
-            self.info_label.setText(
-                f"Mostrando {len(ventas_filtradas)} de {len(self.ventas_data)} ventas  |  "
-                f"Total: ${total_ventas:,.2f}"
-            )
+            # Resetear paginación cuando se aplican filtros
+            self.pagina_actual = 0
+            self.mostrar_pagina_actual()
             
         except Exception as e:
             logging.error(f"Error aplicando filtros: {e}")
     
-    def actualizar_tabla(self, ventas):
+    def actualizar_tabla(self, ventas, mostrar_paginacion=False):
         """Actualizar tabla con las ventas filtradas"""
         try:
             self.history_table.setRowCount(len(ventas))
@@ -302,12 +377,27 @@ class HistorialVentasWindow(QWidget):
                 # ID
                 self.history_table.setItem(row, 0, QTableWidgetItem(str(venta['id_venta'])))
                 
-                # Fecha
-                fecha = venta['fecha'].strftime("%d/%m/%Y") if isinstance(venta['fecha'], datetime) else str(venta['fecha'])
+                # Parsear fecha - puede venir como datetime o string ISO
+                fecha_obj = venta['fecha']
+                if isinstance(fecha_obj, str):
+                    # Parsear string ISO (ej: "2025-12-29T18:46:08.94011")
+                    try:
+                        fecha_obj = datetime.fromisoformat(fecha_obj.replace('Z', '+00:00'))
+                    except:
+                        fecha_obj = None
+                
+                # Fecha (solo la parte de fecha)
+                if isinstance(fecha_obj, datetime):
+                    fecha = fecha_obj.strftime("%d/%m/%Y")
+                else:
+                    fecha = str(venta['fecha']) if venta['fecha'] else "N/A"
                 self.history_table.setItem(row, 1, QTableWidgetItem(fecha))
                 
-                # Hora
-                hora = venta['fecha'].strftime("%H:%M") if isinstance(venta['fecha'], datetime) else "N/A"
+                # Hora (solo la parte de hora)
+                if isinstance(fecha_obj, datetime):
+                    hora = fecha_obj.strftime("%H:%M")
+                else:
+                    hora = "N/A"
                 self.history_table.setItem(row, 2, QTableWidgetItem(hora))
                 
                 # Total
@@ -338,6 +428,10 @@ class HistorialVentasWindow(QWidget):
                 """)
                 btn_detalles.clicked.connect(lambda checked, vid=venta['id_venta']: self.ver_detalles(vid))
                 self.history_table.setCellWidget(row, 5, btn_detalles)
+            
+            # Actualizar información y paginación
+            if mostrar_paginacion:
+                self.actualizar_pagination_buttons()
                 
         except Exception as e:
             logging.error(f"Error cargando historial de ventas: {e}")

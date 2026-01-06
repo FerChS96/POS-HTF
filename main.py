@@ -7,6 +7,26 @@ Usando PySide6 para la interfaz
 import sys
 import os
 import logging
+
+# CONFIGURACIÓN DE LOGGING ANTES DE CUALQUIER OTRO IMPORT
+_handlers = []
+_console_stream = getattr(sys, 'stdout', None)
+if _console_stream is not None:
+    _handlers.append(logging.StreamHandler(_console_stream))
+
+# Configurar logging básico
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=_handlers,
+)
+
+# SUPRIMIR LOGS VERBOSOS DE LIBRERÍAS EXTERNAS ANTES DE IMPORTARLAS
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('supabase').setLevel(logging.WARNING)
+logging.getLogger('websockets').setLevel(logging.WARNING)
+logging.getLogger('asyncio').setLevel(logging.WARNING)
+
 from PySide6.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QMessageBox
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -37,18 +57,6 @@ def _ensure_utf8_stdio_windows() -> None:
         setattr(sys, name, io.TextIOWrapper(buffer, encoding="utf-8", errors="replace"))
 
 _ensure_utf8_stdio_windows()
-
-# Configurar logging ANTES de cualquier otro import
-_handlers = [logging.FileHandler('pos_htf.log', encoding='utf-8')]
-_console_stream = _best_text_stream("stdout")
-if _console_stream is not None:
-    _handlers.append(logging.StreamHandler(_console_stream))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=_handlers,
-)
 
 try:
     from ui.login_window_pyside import LoginWindow
@@ -253,6 +261,9 @@ class POSApplication:
         except Exception as e:
             logging.error(f"Error durante ejecución: {e}")
             return 1
+        finally:
+            # Asegurar que el logging se cierre correctamente
+            logging.shutdown()
 
 if __name__ == "__main__":
     app = POSApplication()

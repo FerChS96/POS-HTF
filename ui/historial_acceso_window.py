@@ -257,23 +257,20 @@ class HistorialAccesoWindow(QWidget):
         
         # Tabla de accesos
         self.accesos_table = QTableWidget()
-        self.accesos_table.setColumnCount(9)
+        self.accesos_table.setColumnCount(6)
         self.accesos_table.setHorizontalHeaderLabels([
-            "Fecha Entrada", "Fecha Salida", "Tipo", "Nombre", 
-            "Código", "Área", "Tiempo", "Dispositivo", "Notas"
+            "Fecha Entrada", "Tipo", "Nombre", 
+            "Código", "Dispositivo", "Notas"
         ])
         
         # Configurar header
         header = self.accesos_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(8, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
         
         # Estilo de la tabla
         self.accesos_table.setAlternatingRowColors(True)
@@ -474,19 +471,6 @@ class HistorialAccesoWindow(QWidget):
                 item_entrada.setTextAlignment(Qt.AlignCenter)
                 self.accesos_table.setItem(row, 0, item_entrada)
                 
-                # Fecha salida
-                if acceso['fecha_salida']:
-                    fecha_salida_str = acceso['fecha_salida'].strftime("%d/%m/%Y %H:%M") if isinstance(acceso['fecha_salida'], datetime) else str(acceso['fecha_salida'])
-                    item_salida = QTableWidgetItem(fecha_salida_str)
-                    item_salida.setTextAlignment(Qt.AlignCenter)
-                else:
-                    item_salida = QTableWidgetItem("DENTRO")
-                    item_salida.setTextAlignment(Qt.AlignCenter)
-                    item_salida.setForeground(Qt.darkGreen)
-                    item_salida.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_NORMAL, QFont.Bold))
-                
-                self.accesos_table.setItem(row, 1, item_salida)
-                
                 # Tipo de acceso
                 tipo = acceso['tipo_acceso'].capitalize()
                 item_tipo = QTableWidgetItem(tipo)
@@ -500,43 +484,32 @@ class HistorialAccesoWindow(QWidget):
                 else:
                     item_tipo.setForeground(Qt.darkRed)
                 
-                self.accesos_table.setItem(row, 2, item_tipo)
+                self.accesos_table.setItem(row, 1, item_tipo)
                 
                 # Nombre completo
-                self.accesos_table.setItem(row, 3, QTableWidgetItem(acceso['nombre_completo']))
+                self.accesos_table.setItem(row, 2, QTableWidgetItem(acceso['nombre_completo']))
                 
                 # Código
                 item_codigo = QTableWidgetItem(acceso['codigo'])
                 item_codigo.setTextAlignment(Qt.AlignCenter)
-                self.accesos_table.setItem(row, 4, item_codigo)
-                
-                # Área
-                item_area = QTableWidgetItem(acceso['area_accedida'])
-                item_area.setTextAlignment(Qt.AlignCenter)
-                self.accesos_table.setItem(row, 5, item_area)
-                
-                # Tiempo de permanencia
-                item_tiempo = QTableWidgetItem("-")
-                item_tiempo.setTextAlignment(Qt.AlignCenter)
-                self.accesos_table.setItem(row, 6, item_tiempo)
+                self.accesos_table.setItem(row, 3, item_codigo)
                 
                 # Dispositivo
                 item_dispositivo = QTableWidgetItem(acceso['dispositivo_registro'])
                 item_dispositivo.setTextAlignment(Qt.AlignCenter)
-                self.accesos_table.setItem(row, 7, item_dispositivo)
+                self.accesos_table.setItem(row, 4, item_dispositivo)
                 
                 # Notas
-                self.accesos_table.setItem(row, 8, QTableWidgetItem(acceso['notas']))
+                self.accesos_table.setItem(row, 5, QTableWidgetItem(acceso['notas']))
             
             # Actualizar información
             total_accesos = len(accesos)
             total_general = len(self.accesos_data)
-            dentro_ahora = sum(1 for a in accesos if a['fecha_salida'] is None)
             
             if total_accesos == total_general:
-                self.info_label.setText(f"Total de accesos: {total_accesos} | Dentro ahora: {dentro_ahora}")
+                self.info_label.setText(f"Total de accesos: {total_accesos}")
             else:
-                self.info_label.setText(f"Mostrando {total_accesos} de {total_general} accesos | Dentro ahora: {dentro_ahora}")
+                self.info_label.setText(f"Mostrando {total_accesos} de {total_general} accesos")
             
             logging.info(f"Mostrando {total_accesos} accesos en tabla")
             
