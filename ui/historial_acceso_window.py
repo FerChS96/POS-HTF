@@ -277,6 +277,7 @@ class HistorialAccesoWindow(QWidget):
         self.accesos_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.accesos_table.setSelectionMode(QTableWidget.SingleSelection)
         self.accesos_table.verticalHeader().setVisible(False)
+        self.accesos_table.setEditTriggers(QTableWidget.NoEditTriggers)
         
         table_layout.addWidget(self.accesos_table)
         return table_panel

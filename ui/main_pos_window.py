@@ -59,6 +59,8 @@ from ui.dias_festivos_window import DiasFestvosWindow
 from ui.notificacion_entrada_widget import NotificacionEntradaWidget
 from ui.lockers_window import LockersWindow
 from ui.asignar_locker_window import AsignacionesLockersWindow
+from ui.asignar_locker_diario_window import AsignarLockerDiarioWindow
+from ui.historial_lockers_window import HistorialLockersWindow
 from utils.monitor_entradas import MonitorEntradas
 from database.postgres_manager import PostgresManager
 
@@ -302,7 +304,7 @@ class MainPOSWindow(QMainWindow):
         btn_historial = TileButton("Historial de Acceso", "fa5s.history", WindowsPhoneTheme.TILE_PURPLE)
         btn_historial.clicked.connect(self.abrir_historial_acceso)
         btn_lockers = TileButton("Asignar\nLockers", "mdi.locker", WindowsPhoneTheme.TILE_BLUE)
-        btn_lockers.clicked.connect(self.abrir_asignaciones_lockers)
+        btn_lockers.clicked.connect(self.abrir_asignaciones_lockers_diarios)
         
         actions_grid.addWidget(btn_search, 0, 0)
         actions_grid.addWidget(btn_historial, 0, 1)
@@ -353,6 +355,10 @@ class MainPOSWindow(QMainWindow):
             btn_historial_ventas = TileButton("Historial\nVentas", "fa5s.history", WindowsPhoneTheme.TILE_PURPLE)
             btn_historial_ventas.clicked.connect(self.abrir_historial)
             admin_grid.addWidget(btn_historial_ventas, 1, 2)
+            
+            btn_historial_lockers = TileButton("Historial\nLockers", "fa5s.key", WindowsPhoneTheme.TILE_MAGENTA)
+            btn_historial_lockers.clicked.connect(self.abrir_historial_lockers)
+            admin_grid.addWidget(btn_historial_lockers, 1, 3)
         else:
             # Si no es administrador, mostrar mensaje
             no_access_label = StyledLabel(
@@ -742,6 +748,37 @@ class MainPOSWindow(QMainWindow):
             logging.info("Abriendo widget de historial")
         except Exception as e:
             logging.error(f"Error abriendo historial: {e}")
+            
+    def abrir_historial_lockers(self):
+        """Abrir widget de historial de lockers"""
+        try:
+            # Actualizar título de la barra superior
+            self.top_bar.set_title("HISTORIAL DE LOCKERS")
+            
+            # Ocultar barra de navegación
+            self.nav_bar.hide()
+            
+            # Crear widget de historial de lockers
+            historial_lockers_widget = HistorialLockersWindow(
+                self.pg_manager, 
+                self.supabase_service, 
+                self.user_data, 
+                self
+            )
+            
+            # Conectar señal para volver a administración
+            historial_lockers_widget.cerrar_solicitado.connect(self.volver_a_administracion)
+            
+            # Agregar al stack y cambiar a esa vista
+            self.stacked_widget.addWidget(historial_lockers_widget)
+            self.stacked_widget.setCurrentWidget(historial_lockers_widget)
+            
+            # Forzar actualización del layout
+            QTimer.singleShot(0, self.update_layout)
+            
+            logging.info("Abriendo widget de historial de lockers")
+        except Exception as e:
+            logging.error(f"Error abriendo historial de lockers: {e}")
             
     def abrir_cierre_caja(self):
         """Abrir widget de cierre de caja"""
@@ -1183,10 +1220,10 @@ class MainPOSWindow(QMainWindow):
             logging.error(f"Error abriendo catálogo de lockers: {e}")
     
     def abrir_asignaciones_lockers(self):
-        """Abrir ventana de asignación de lockers"""
+        """Abrir ventana de asignación de lockers mensuales"""
         try:
             # Actualizar título de la barra superior
-            self.top_bar.set_title("ASIGNACIONES DE LOCKERS")
+            self.top_bar.set_title("ASIGNACIONES DE LOCKERS MENSUALES")
             
             # Ocultar barra de navegación
             self.nav_bar.hide()
@@ -1197,14 +1234,44 @@ class MainPOSWindow(QMainWindow):
             # Conectar señal de cierre
             asignaciones_widget.cerrar_solicitado.connect(self.volver_a_miembros)
             
+            # Conectar signal para abrir diarios desde mensuales
+            asignaciones_widget.abrir_diarios_solicitado.connect(self.abrir_asignaciones_lockers_diarios)
+            
             # Agregar al stack y mostrar
             self.stacked_widget.addWidget(asignaciones_widget)
             self.stacked_widget.setCurrentWidget(asignaciones_widget)
             
-            logging.info("Abriendo asignaciones de lockers")
+            logging.info("Abriendo asignaciones de lockers mensuales")
             
         except Exception as e:
             logging.error(f"Error abriendo asignaciones de lockers: {e}")
+    
+    def abrir_asignaciones_lockers_diarios(self):
+        """Abrir ventana de asignación de lockers diarios"""
+        try:
+            # Actualizar título de la barra superior
+            self.top_bar.set_title("ASIGNACIONES DE LOCKERS DIARIOS")
+            
+            # Ocultar barra de navegación
+            self.nav_bar.hide()
+            
+            # Crear widget de asignaciones diarias
+            asignaciones_diarias_widget = AsignarLockerDiarioWindow(self.pg_manager, self.user_data)
+            
+            # Conectar señal de cierre
+            asignaciones_diarias_widget.cerrar_solicitado.connect(self.volver_a_miembros)
+            
+            # Conectar signal para abrir mensuales desde diarios
+            asignaciones_diarias_widget.abrir_mensuales_solicitado.connect(self.abrir_asignaciones_lockers)
+            
+            # Agregar al stack y mostrar
+            self.stacked_widget.addWidget(asignaciones_diarias_widget)
+            self.stacked_widget.setCurrentWidget(asignaciones_diarias_widget)
+            
+            logging.info("Abriendo asignaciones de lockers diarios")
+            
+        except Exception as e:
+            logging.error(f"Error abriendo asignaciones de lockers diarios: {e}")
     
     def volver_a_administracion(self):
         """Volver a la página de administración"""

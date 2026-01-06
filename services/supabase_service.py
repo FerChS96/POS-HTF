@@ -376,12 +376,13 @@ class SupabaseService:
             
             total = total_response.count if total_response.count is not None else 0
             
-            # Lockers ocupados (asignaciones activas con locker)
+            # Lockers ocupados (asignaciones activas con locker - solo productos 9 y 19)
             occupied_response = self.client.table('asignaciones_activas')\
                 .select('id_locker', count='exact')\
                 .eq('activa', True)\
                 .eq('cancelada', False)\
                 .not_.is_('id_locker', 'null')\
+                .in_('id_producto_digital', [9, 19])\
                 .execute()
             
             occupied = occupied_response.count if occupied_response.count is not None else 0

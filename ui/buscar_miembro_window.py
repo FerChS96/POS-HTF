@@ -268,6 +268,7 @@ class BuscarMiembroWindow(QWidget):
         self.miembros_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.miembros_table.setSelectionMode(QTableWidget.SingleSelection)
         self.miembros_table.verticalHeader().setVisible(False)
+        self.miembros_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.miembros_table.doubleClicked.connect(self.mostrar_detalle_miembro)
         
         table_layout.addWidget(self.miembros_table)
@@ -381,14 +382,14 @@ class BuscarMiembroWindow(QWidget):
                             if not asignacion_locker or fecha_fin_temp > datetime.strptime(asignacion_locker['fecha_fin'], '%Y-%m-%d').date():
                                 asignacion_locker = a
                     
-                    # Segunda pasada: buscar membresías (id_producto_digital != 9)
+                    # Segunda pasada: buscar membresías (id_producto_digital = 10 o 11)
                     for a in asignaciones:
                         if not a.get('activa') or a.get('cancelada'):
                             continue
                         
-                        # Solo procesar asignaciones que NO sean locker mensual
+                        # Solo procesar asignaciones de membresía (id_producto_digital = 10 u 11)
                         id_producto = a.get('id_producto_digital')
-                        if id_producto == 9:
+                        if id_producto not in [10, 11]:
                             continue
                         
                         # Verificar que las fechas estén dentro del rango

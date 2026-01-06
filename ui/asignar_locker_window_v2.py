@@ -1,23 +1,22 @@
 """
-Ventana de Asignación de Lockers - Versión 2.0 (NUEVA)
+Ventana de Asignación de Lockers - Versión 2.0
 Grid editable con asignaciones activas de lockers mensuales
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QComboBox, QPushButton, QLabel, QHeaderView, QAbstractItemView,
-    QMessageBox, QSpinBox, QDialog, QGridLayout
+    QMessageBox, QSpinBox
 )
-from PySide6.QtCore import Qt, QDate, Signal
+from PySide6.QtCore import Qt, QDate
 from PySide6.QtGui import QFont, QColor
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from ui.components import (
     WindowsPhoneTheme,
     TileButton,
     SectionTitle,
-    StyledLabel,
     show_success_dialog,
     show_warning_dialog,
     show_error_dialog,
@@ -29,9 +28,6 @@ logging.basicConfig(level=logging.INFO)
 
 class AsignarLockerWindow(QWidget):
     """Ventana para gestionar asignaciones de lockers mensuales"""
-    
-    cerrar_solicitado = Signal()
-    abrir_diarios_solicitado = Signal()
     
     def __init__(self, pg_manager, user_data, parent=None):
         super().__init__(parent)
@@ -56,6 +52,11 @@ class AsignarLockerWindow(QWidget):
         title = SectionTitle("GESTIÓN DE LOCKERS MENSUALES")
         layout.addWidget(title)
         
+        # Instrucción
+        info_label = QLabel("Edita el locker asignado a cada miembro. Solo se pueden asignar lockers de renta mensual.")
+        info_label.setStyleSheet(f"color: #666; font-size: 12px;")
+        layout.addWidget(info_label)
+        
         # Table widget
         self.table = QTableWidget()
         self.table.setColumnCount(6)
@@ -73,27 +74,23 @@ class AsignarLockerWindow(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setDefaultSectionSize(60)  # Altura de fila consistente
         self.table.setStyleSheet(f"""
             QTableWidget {{
                 background-color: white;
-                alternate-background-color: {WindowsPhoneTheme.BG_LIGHT};
-                border: 1px solid {WindowsPhoneTheme.BORDER_COLOR};
+                alternate-background-color: #f9fafb;
+                border: 1px solid #e5e7eb;
                 border-radius: 4px;
-                font-family: {WindowsPhoneTheme.FONT_FAMILY};
-                font-size: {WindowsPhoneTheme.FONT_SIZE_NORMAL}px;
             }}
             QTableWidget::item {{
                 padding: 8px;
-                border-bottom: 1px solid {WindowsPhoneTheme.BORDER_COLOR};
+                border-bottom: 1px solid #e5e7eb;
             }}
             QHeaderView::section {{
-                background-color: {WindowsPhoneTheme.PRIMARY_BLUE};
+                background-color: {WindowsPhoneTheme.TILE_BLUE};
                 color: white;
                 padding: 10px;
                 border: none;
                 font-weight: bold;
-                font-family: {WindowsPhoneTheme.FONT_FAMILY};
             }}
         """)
         
@@ -101,21 +98,21 @@ class AsignarLockerWindow(QWidget):
         
         # Botones
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(WindowsPhoneTheme.TILE_SPACING)
+        button_layout.addStretch()
         
-        btn_cancelar = TileButton("Cancelar", "fa5s.times", WindowsPhoneTheme.TILE_RED)
-        btn_cancelar.clicked.connect(self.cerrar_solicitado.emit)
-        button_layout.addWidget(btn_cancelar)
-        
-        btn_diarios = TileButton("Ver Diarios", "fa5s.calendar-alt", WindowsPhoneTheme.TILE_MAGENTA)
-        btn_diarios.clicked.connect(self.abrir_diarios_solicitado.emit)
-        button_layout.addWidget(btn_diarios)
-        
-        btn_actualizar = TileButton("Actualizar", "fa5s.sync", WindowsPhoneTheme.TILE_BLUE)
+        btn_actualizar = TileButton("Actualizar", icon_name="refresh")
         btn_actualizar.clicked.connect(self.cargar_asignaciones)
         button_layout.addWidget(btn_actualizar)
         
-        btn_guardar = TileButton("Guardar Cambios", "fa5s.save", WindowsPhoneTheme.TILE_GREEN)
+        btn_guardar = TileButton("Guardar Cambios", icon_name="save")
+        btn_guardar.setStyleSheet(f"""
+            TileButton {{
+                background-color: #10b981;
+            }}
+            TileButton:hover {{
+                background-color: #059669;
+            }}
+        """)
         btn_guardar.clicked.connect(self.guardar_cambios)
         button_layout.addWidget(btn_guardar)
         
@@ -148,7 +145,6 @@ class AsignarLockerWindow(QWidget):
         
         for idx, asig in enumerate(self.asignaciones_data):
             self.table.insertRow(idx)
-            self.table.setRowHeight(idx, 60)
             
             miembro = asig.get('miembros', {}) or {}
             locker = asig.get('lockers', {}) or {}
@@ -162,12 +158,7 @@ class AsignarLockerWindow(QWidget):
             try:
                 fecha_fin_date = datetime.strptime(fecha_fin, '%Y-%m-%d').date()
                 dias_restantes = (fecha_fin_date - hoy).days
-                if dias_restantes < 0:
-                    color_dias = QColor('#ef4444')
-                elif dias_restantes < 7:
-                    color_dias = QColor('#f59e0b')
-                else:
-                    color_dias = QColor('#10b981')
+                color_dias = QColor('#ef4444') if dias_restantes < 0 else ('#f59e0b' if dias_restantes < 7 else '#10b981')
             except:
                 dias_restantes = 0
                 color_dias = QColor('#666')
@@ -187,18 +178,12 @@ class AsignarLockerWindow(QWidget):
             combo_locker.setStyleSheet(f"""
                 QComboBox {{
                     padding: 6px;
-                    border: 1px solid {WindowsPhoneTheme.BORDER_COLOR};
+                    border: 1px solid #d1d5db;
                     border-radius: 4px;
                     background-color: white;
-                    font-family: {WindowsPhoneTheme.FONT_FAMILY};
-                    font-size: {WindowsPhoneTheme.FONT_SIZE_NORMAL}px;
                 }}
                 QComboBox:focus {{
-                    border: 2px solid {WindowsPhoneTheme.PRIMARY_BLUE};
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 20px;
+                    border: 2px solid {WindowsPhoneTheme.TILE_BLUE};
                 }}
             """)
             self.cargar_lockers_mensuales(combo_locker, asig.get('id_locker'))
@@ -225,71 +210,17 @@ class AsignarLockerWindow(QWidget):
             self.table.setItem(idx, 5, item_dias)
     
     def cargar_lockers_mensuales(self, combo, id_locker_actual=None):
-        """Llenar combo con lockers de renta mensual disponibles (no asignados)"""
+        """Llenar combo con lockers de renta mensual"""
         try:
-            # Obtener todos los lockers de renta mensual activos, ordenados ascendente por id
-            response_todos = self.pg_manager.client.table('lockers').select(
+            response = self.pg_manager.client.table('lockers').select(
                 'id_locker, numero, ubicacion'
-            ).eq('tipo', 'renta_mensual').eq('activo', True).order('id_locker', desc=False).execute()
+            ).eq('tipo', 'renta_mensual').eq('activo', True).order('numero').execute()
             
-            todos_lockers = response_todos.data or []
-            
-            # Obtener IDs de lockers ya asignados (activos)
-            response_asignados = self.pg_manager.client.table('asignaciones_activas').select(
-                'id_locker'
-            ).eq('id_producto_digital', 9).eq('activa', True).execute()
-            
-            ids_asignados = {item['id_locker'] for item in (response_asignados.data or [])}
-            
-            # Filtrar solo lockers disponibles (no asignados) o que es el actual
-            lockers_disponibles = [
-                l for l in todos_lockers 
-                if l['id_locker'] not in ids_asignados or l['id_locker'] == id_locker_actual
-            ]
-            
-            # Mejorar estilo del combobox
-            combo.setStyleSheet(f"""
-                QComboBox {{
-                    padding: 8px;
-                    border: 2px solid {WindowsPhoneTheme.BORDER_COLOR};
-                    border-radius: 4px;
-                    background-color: white;
-                    font-family: {WindowsPhoneTheme.FONT_FAMILY};
-                    font-size: {WindowsPhoneTheme.FONT_SIZE_NORMAL}px;
-                    color: {WindowsPhoneTheme.TEXT_PRIMARY};
-                    min-height: 30px;
-                }}
-                QComboBox:focus {{
-                    border: 2px solid {WindowsPhoneTheme.PRIMARY_BLUE};
-                    background-color: #f9fafb;
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 25px;
-                    padding-right: 5px;
-                }}
-                QComboBox::down-arrow {{
-                    image: none;
-                    border-left: 5px solid transparent;
-                    border-right: 5px solid transparent;
-                    border-top: 5px solid {WindowsPhoneTheme.PRIMARY_BLUE};
-                }}
-                QComboBox QAbstractItemView {{
-                    border: 1px solid {WindowsPhoneTheme.BORDER_COLOR};
-                    background-color: white;
-                    selection-background-color: {WindowsPhoneTheme.PRIMARY_BLUE};
-                    padding: 4px;
-                }}
-                QComboBox QAbstractItemView::item {{
-                    padding: 6px;
-                    min-height: 25px;
-                }}
-            """)
+            lockers = response.data or []
             
             combo.addItem("-- Seleccionar locker --", None)
             
-            # Agregar lockers disponibles ordenados
-            for locker in lockers_disponibles:
+            for locker in lockers:
                 display = f"Locker {locker['numero']} - Zona {locker['ubicacion'].split()[-1]}"
                 combo.addItem(display, locker['id_locker'])
             
@@ -301,7 +232,7 @@ class AsignarLockerWindow(QWidget):
                         break
         
         except Exception as e:
-            logging.error(f"Error cargando lockers mensuales disponibles: {e}")
+            logging.error(f"Error cargando lockers: {e}")
     
     def marcar_cambio(self, row):
         """Marcar que hay un cambio pendiente en esta fila"""
@@ -354,7 +285,3 @@ class AsignarLockerWindow(QWidget):
         except Exception as e:
             show_error_dialog(self, "Error", f"No se pudieron guardar los cambios: {str(e)}")
             logging.error(f"Error guardando cambios: {e}")
-
-
-# Alias para compatibilidad con importaciones existentes
-AsignacionesLockersWindow = AsignarLockerWindow
