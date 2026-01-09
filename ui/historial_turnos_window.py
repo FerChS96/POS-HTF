@@ -55,9 +55,9 @@ class HistorialTurnosWindow(QWidget):
                                  WindowsPhoneTheme.MARGIN_MEDIUM)
         layout.setSpacing(WindowsPhoneTheme.MARGIN_SMALL)
         
-        # Título
-        title = SectionTitle("HISTORIAL DE TURNOS")
-        layout.addWidget(title)
+        # El título viene del TopBar, no duplicar aquí
+        # title = SectionTitle("")
+        # layout.addWidget(title)
         
         # Panel de filtros
         filters_panel = self.create_filters_panel()

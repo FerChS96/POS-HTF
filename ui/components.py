@@ -812,15 +812,16 @@ def apply_windows_phone_stylesheet(widget):
 # Funciones helper para crear layouts estándar
 
 def create_page_layout(title_text):
-    """Crear layout estándar de página con título"""
+    """Crear layout estándar de página con título opcional"""
     layout = QVBoxLayout()
     layout.setContentsMargins(WindowsPhoneTheme.MARGIN_MEDIUM, WindowsPhoneTheme.MARGIN_MEDIUM, 
                              WindowsPhoneTheme.MARGIN_MEDIUM, WindowsPhoneTheme.MARGIN_MEDIUM)
     layout.setSpacing(15)
     
-    # Título
-    title = SectionTitle(title_text)
-    layout.addWidget(title)
+    # Agregar título solo si no está vacío
+    if title_text and title_text.strip():
+        title = SectionTitle(title_text)
+        layout.addWidget(title)
     
     return layout
 

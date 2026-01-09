@@ -1719,7 +1719,7 @@ class MainPOSWindow(QMainWindow):
                 except Exception as e:
                     logging.error(f"Error verificando turno al cerrar: {e}")
             
-            # PRIMERO: Detener monitor de entradas ANTES de aceptar el cierre
+            # Detener monitor de entradas
             if self.monitor_entradas:
                 try:
                     self.monitor_entradas.detener()
@@ -1736,34 +1736,9 @@ class MainPOSWindow(QMainWindow):
             
             self.notificaciones_activas.clear()
             
-            # AHORA sí aceptar el evento de cierre
+            # Aceptar el evento de cierre
             event.accept()
-            
-        except KeyboardInterrupt:
-            # Manejar interrupción del teclado (Ctrl+C)
-            logging.warning("Cierre interrumpido por el usuario (Ctrl+C)")
-            
-            # Forzar detención de threads incluso con interrupción
-            try:
-                if self.monitor_entradas:
-                    self.monitor_entradas.detener()
-                    logging.info("Monitor de entradas detenido (forzado)")
-            except:
-                pass
-                
-            # Cerrar notificaciones
-            try:
-                for notificacion in list(self.notificaciones_activas):
-                    try:
-                        notificacion.close()
-                    except:
-                        pass
-                self.notificaciones_activas.clear()
-            except:
-                pass
-                
-            # Aceptar el cierre incluso con interrupción
-            event.accept()
+            logging.info("Aplicación cerrada correctamente")
                 
         except Exception as e:
             logging.error(f"Error en closeEvent: {e}")

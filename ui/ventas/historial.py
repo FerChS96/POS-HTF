@@ -58,23 +58,27 @@ class HistorialVentasWindow(QWidget):
     def setup_ui(self):
         """Configurar interfaz de historial"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(WindowsPhoneTheme.MARGIN_MEDIUM, WindowsPhoneTheme.MARGIN_MEDIUM, 
-                                 WindowsPhoneTheme.MARGIN_MEDIUM, WindowsPhoneTheme.MARGIN_MEDIUM)
-        layout.setSpacing(15)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Contenido
+        content = QWidget()
+        content_layout = create_page_layout("")
+        content.setLayout(content_layout)
         
         # Buscador
         self.search_bar = SearchBar("Buscar por ID de venta, usuario o monto...")
         self.search_bar.connect_search(self.on_search_changed)
-        layout.addWidget(self.search_bar)
+        content_layout.addWidget(self.search_bar)
         
         # Filtros
-        self.create_filters(layout)
+        self.create_filters(content_layout)
         
         # Tabla
-        self.create_history_table(layout)
+        self.create_history_table(content_layout)
         
         # Panel de información y paginación
-        self.create_info_buttons_panel(layout)
+        self.create_info_buttons_panel(content_layout)
         
         # Botones
         buttons_layout = QHBoxLayout()
@@ -89,7 +93,8 @@ class HistorialVentasWindow(QWidget):
         buttons_layout.addWidget(btn_exportar)
         buttons_layout.addWidget(btn_cerrar)
         
-        layout.addLayout(buttons_layout)
+        content_layout.addLayout(buttons_layout)
+        layout.addWidget(content)
         
         # Cargar datos iniciales
         self.cargar_historial_completo()

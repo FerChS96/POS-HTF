@@ -54,7 +54,7 @@ class FormularioDiaFestivoDialog(QDialog):
         layout.setSpacing(15)
         
         # Título
-        title = SectionTitle("DÍA FESTIVO")
+        title = SectionTitle("Días Festivos")
         layout.addWidget(title)
         
         # Grid de campos
@@ -259,9 +259,9 @@ class DiasFestvosWindow(QWidget):
                                  WindowsPhoneTheme.MARGIN_MEDIUM)
         layout.setSpacing(WindowsPhoneTheme.MARGIN_SMALL)
         
-        # Título
-        title = SectionTitle("DÍAS FESTIVOS")
-        layout.addWidget(title)
+        # El título viene del TopBar, no duplicar aquí
+        # title = SectionTitle("")
+        # layout.addWidget(title)
         
         # Tabla de días festivos
         self.tabla_festivos = QTableWidget()

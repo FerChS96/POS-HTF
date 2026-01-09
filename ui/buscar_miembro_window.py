@@ -211,7 +211,7 @@ class BuscarMiembroWindow(QWidget):
         
         # Contenido
         content = QWidget()
-        content_layout = create_page_layout("BUSCAR MIEMBRO")
+        content_layout = create_page_layout("")
         content.setLayout(content_layout)
         
         # Panel de búsqueda y filtros

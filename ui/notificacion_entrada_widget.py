@@ -136,7 +136,14 @@ class NotificacionEntradaWidget(QDialog):
         )
         header_layout.setSpacing(WindowsPhoneTheme.MARGIN_SMALL)
         
-        title = QLabel("✓ ACCESO REGISTRADO")
+        # Determinar el título basado en el tipo de acceso
+        tipo_acceso = self.miembro_data.get('tipo_acceso', 'miembro')
+        if tipo_acceso == 'uso_beneficio':
+            titulo_texto = "🛁 USO DE BENEFICIOS"
+        else:
+            titulo_texto = "✓ ACCESO REGISTRADO"
+        
+        title = QLabel(titulo_texto)
         title.setObjectName("notificacionTitle")
         title.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, 20, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
@@ -230,6 +237,13 @@ class NotificacionEntradaWidget(QDialog):
         except Exception as e:
             logging.error(f"Error procesando ID del miembro: {e}")
             self.agregar_info_row(info_layout, "ID:", "#ERROR")
+        
+        # Para uso de beneficios, mostrar el tipo de beneficio
+        tipo_acceso = self.miembro_data.get('tipo_acceso', 'miembro')
+        if tipo_acceso == 'uso_beneficio':
+            area_accedida = self.miembro_data.get('area_accedida', 'Beneficio')
+            beneficio_texto = self._formatear_beneficio(area_accedida)
+            self.agregar_info_row(info_layout, "Beneficio:", beneficio_texto)
         
         # Fecha de registro
         fecha_registro = self.miembro_data.get('fecha_registro', 'N/A')
@@ -520,6 +534,33 @@ class NotificacionEntradaWidget(QDialog):
                 background-color: #003d82;
             }}
         """)
+
+
+    def _formatear_beneficio(self, area_accedida):
+        """Formatear el texto del beneficio para mostrar en la notificación"""
+        if not area_accedida:
+            return "Beneficio general"
+        
+        # Mapeo de áreas a textos más descriptivos
+        mapeo_beneficios = {
+            'regaderas': 'Uso de Regaderas',
+            'regadera': 'Uso de Regaderas',
+            'vapores': 'Uso de Vapores',
+            'vapor': 'Uso de Vapores',
+            'sauna': 'Uso de Sauna',
+            'acompañante': 'Visita de Acompañante',
+            'invitado': 'Visita de Invitado',
+            'beneficio': 'Uso de Beneficio'
+        }
+        
+        # Buscar coincidencia case-insensitive
+        area_lower = area_accedida.lower().strip()
+        for key, value in mapeo_beneficios.items():
+            if key in area_lower:
+                return value
+        
+        # Si no hay coincidencia, capitalizar y devolver
+        return area_accedida.strip().capitalize()
 
 
 class FotoThread(QThread):

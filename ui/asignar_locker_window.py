@@ -40,7 +40,7 @@ class AsignarLockerWindow(QWidget):
         self.asignaciones_data = []
         self.cambios_pendientes = {}  # {id_asignacion: {'id_locker': nuevo_id, ...}}
         
-        self.setWindowTitle("Gestión de Lockers Mensuales")
+        self.setWindowTitle("")
         self.setMinimumSize(1200, 700)
         
         self.setup_ui()
@@ -53,8 +53,8 @@ class AsignarLockerWindow(QWidget):
         layout.setSpacing(15)
         
         # Título
-        title = SectionTitle("GESTIÓN DE LOCKERS MENSUALES")
-        layout.addWidget(title)
+        #title = SectionTitle("GESTIÓN DE LOCKERS MENSUALES")
+        #layout.addWidget(title)
         
         # Table widget
         self.table = QTableWidget()

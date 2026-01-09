@@ -42,7 +42,8 @@ class SupabaseRealtimeThread(QThread):
             self.loop.run_until_complete(self._run_async())
 
         except Exception as e:
-            logging.error(f"[ERROR] Error en Supabase Realtime thread: {e}")
+            if self.running:  # Solo loggear si no fue un apagado intencional
+                logging.error(f"[ERROR] Error en Supabase Realtime thread: {e}")
         finally:
             if self.loop:
                 try:
@@ -71,7 +72,8 @@ class SupabaseRealtimeThread(QThread):
                         pass
                 finally:
                     try:
-                        self.loop.close()
+                        if not self.loop.is_closed():
+                            self.loop.close()
                     except Exception:
                         pass
 
@@ -133,16 +135,24 @@ class SupabaseRealtimeThread(QThread):
             except asyncio.CancelledError:
                 # Capturar CancelledError para asegurar limpieza
                 self.running = False
+                if self.running:  # Solo loggear si sigue corriendo
+                    logging.info("[SHUTDOWN] Hilo cancelado, ejecutando shutdown...")
                 raise  # Re-lanzar para que el loop sepa que fue cancelado
 
         except asyncio.CancelledError:
             # El hilo fue cancelado, asegurar limpieza
             self.running = False
+            if self.running:  # Solo loggear si sigue corriendo
+                logging.info("[SHUTDOWN] CancelledError capturado en _run_async")
         except Exception as e:
-            logging.error(f"[ERROR] Error en Supabase Realtime async: {e}")
+            if self.running:  # Solo loggear si fue un error intencional
+                logging.error(f"[ERROR] Error en Supabase Realtime async: {e}")
         finally:
             # Ejecutar limpieza centralizada
-            await self._shutdown_async()
+            try:
+                await self._shutdown_async()
+            except Exception:
+                pass
 
     def _on_entrada_insertada(self, payload):
         """Manejar cuando se inserta una nueva entrada"""
@@ -165,6 +175,14 @@ class SupabaseRealtimeThread(QThread):
             new_record = data.get('record', {})
 
             if new_record:
+                # Verificar si es 'efectivo_pendiente' - si es así, no emitir alerta
+                tipo_acceso = new_record.get('tipo_acceso')
+                if tipo_acceso == 'efectivo_pendiente':
+                    if self.running:  # Solo loggear si el hilo sigue activo
+                        entrada_id = new_record.get('id_entrada')
+                        logging.info(f"[ENTRADA] Entrada ignorada por tipo 'efectivo_pendiente': ID {entrada_id}")
+                    return
+                
                 # Verificar si ya procesamos este evento
                 entrada_id = new_record.get('id_entrada')
                 if entrada_id in self.procesados:
@@ -243,30 +261,46 @@ class SupabaseRealtimeThread(QThread):
 
         # Esperar un poco para que el _run_async termine naturalmente
         import time
-        time.sleep(0.1)
+        time.sleep(0.2)
 
-        if self.loop and self.loop.is_running():
+        if self.loop and not self.loop.is_closed():
             try:
                 # Ejecutar la rutina de apagado dentro del event loop del hilo de forma segura
                 import asyncio
-                future = asyncio.run_coroutine_threadsafe(self._shutdown_async(), self.loop)
-                try:
-                    future.result(timeout=3.0)
-                except Exception:
-                    # Ignorar timeouts/cancelaciones durante el cierre
-                    pass
+                
+                # Si el loop está corriendo, usar run_coroutine_threadsafe
+                if self.loop.is_running():
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(self._shutdown_async(), self.loop)
+                        try:
+                            future.result(timeout=2.0)
+                        except Exception:
+                            # Ignorar timeouts/cancelaciones durante el cierre
+                            pass
+                    except Exception:
+                        # Si no podemos ejecutar coroutine, intentar parar el loop directamente
+                        try:
+                            self.loop.call_soon_threadsafe(self.loop.stop)
+                        except Exception:
+                            pass
+                    
+                    # Dar tiempo para que el loop se detenga
+                    time.sleep(0.1)
+                else:
+                    # Si el loop no está corriendo, simplemente cerrar
+                    try:
+                        if not self.loop.is_closed():
+                            self.loop.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logging.error(f"Error durante shutdown del loop: {e}")
 
-                # Solicitar parada del loop desde otro thread
-                try:
-                    self.loop.call_soon_threadsafe(self.loop.stop)
-                except Exception:
-                    pass
-            except Exception:
-                # Ignorar errores durante shutdown
-                pass
-
-        # Esperar a que el hilo termine
-        self.wait()
+        # Esperar a que el hilo termine (máximo 2 segundos)
+        try:
+            self.wait(timeout=2000)
+        except Exception:
+            pass
 
     def __del__(self):
         """Destructor para asegurar limpieza de recursos"""

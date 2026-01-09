@@ -35,7 +35,7 @@ class FormularioUbicacionDialog(QDialog):
         super().__init__(parent)
         self.pg_manager = pg_manager
         self.ubicacion_data = ubicacion_data
-        self.setWindowTitle("Nueva Ubicación" if not ubicacion_data else "Editar Ubicación")
+        self.setWindowTitle("")
         self.setModal(True)
         self.setMinimumWidth(500)
         self.setMinimumHeight(400)
@@ -215,16 +215,16 @@ class UbicacionesWindow(QWidget):
         layout.setSpacing(WindowsPhoneTheme.MARGIN_SMALL)
         
         # Título
-        title = SectionTitle("ADMINISTRACIÓN DE UBICACIONES")
-        layout.addWidget(title)
+        # title = SectionTitle("ADMINISTRACIÓN DE UBICACIONES")
+        # layout.addWidget(title)
         
         # Panel con info
-        info_panel = ContentPanel()
-        info_layout = QHBoxLayout(info_panel)
-        self.info_total = StyledLabel("Total: 0 ubicaciones", bold=True)
-        info_layout.addWidget(self.info_total)
-        info_layout.addStretch()
-        layout.addWidget(info_panel)
+        # info_panel = ContentPanel()
+        #info_layout = QHBoxLayout(info_panel)
+        #self.info_total = StyledLabel("Total: 0 ubicaciones", bold=True)
+        #info_layout.addWidget(self.info_total)
+        #info_layout.addStretch()
+        # layout.addWidget(info_panel)
         
         # Panel de lista de ubicaciones
         lista_panel = self._setup_panel_lista()
@@ -308,7 +308,7 @@ class UbicacionesWindow(QWidget):
             # Usar PostgresManager para obtener ubicaciones
             self.ubicaciones = self.pg_manager.get_ubicaciones()
             self.actualizar_tabla()
-            self.info_total.setText(f"Total: {len(self.ubicaciones)} ubicaciones")
+            # self.info_total.setText(f"Total: {len(self.ubicaciones)} ubicaciones")
             
             logging.info(f"Cargadas {len(self.ubicaciones)} ubicaciones")
                 

@@ -36,7 +36,7 @@ class FormularioPersonalDialog(QDialog):
         super().__init__(parent)
         self.pg_manager = pg_manager
         self.personal_data = personal_data
-        self.setWindowTitle("Datos del Personal")
+        self.setWindowTitle("")
         self.setModal(True)
         self.setMinimumWidth(600)
         self.setMinimumHeight(700)
@@ -297,9 +297,9 @@ class PersonalWindow(QWidget):
                                  WindowsPhoneTheme.MARGIN_MEDIUM)
         layout.setSpacing(WindowsPhoneTheme.MARGIN_SMALL)
         
-        # Título
-        title = SectionTitle("GESTIÓN DE PERSONAL")
-        layout.addWidget(title)
+        # El título viene del TopBar, no duplicar aquí
+        # title = SectionTitle("GESTIÓN DE PERSONAL")
+        # layout.addWidget(title)
         
         # Tabla de personal
         self.tabla_personal = QTableWidget()

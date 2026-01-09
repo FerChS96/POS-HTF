@@ -57,7 +57,7 @@ DROP TRIGGER IF EXISTS trigger_notificar_nueva_entrada ON registro_entradas;
 CREATE TRIGGER trigger_notificar_nueva_entrada
 AFTER INSERT ON registro_entradas
 FOR EACH ROW
-WHEN (NEW.tipo_acceso = 'miembro')
+WHEN (NEW.tipo_acceso IN ('miembro', 'uso_beneficio'))
 EXECUTE FUNCTION notificar_nueva_entrada();
 
 -- 3. Verificación

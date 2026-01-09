@@ -57,7 +57,7 @@ class InventarioWindow(QWidget):
         
         # Contenido
         content = QWidget()
-        content_layout = create_page_layout("INVENTARIO COMPLETO")
+        content_layout = create_page_layout("")
         content.setLayout(content_layout)
         
         # Buscador

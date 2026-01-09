@@ -422,7 +422,7 @@ class VentasDiaWindow(QWidget):
         
         # Contenido
         content = QWidget()
-        content_layout = create_page_layout("RESUMEN DE VENTAS - " + date.today().strftime("%d/%m/%Y"))
+        content_layout = create_page_layout("")
         content.setLayout(content_layout)
         
         # Widgets de resumen

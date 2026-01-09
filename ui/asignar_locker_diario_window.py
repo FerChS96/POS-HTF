@@ -40,7 +40,7 @@ class AsignarLockerDiarioWindow(QWidget):
         self.user_data = user_data
         self.asignaciones_data = []
         
-        self.setWindowTitle("Gestión de Lockers Diarios")
+        self.setWindowTitle("")
         self.setMinimumSize(1200, 700)
         
         self.setup_ui()
@@ -53,8 +53,8 @@ class AsignarLockerDiarioWindow(QWidget):
         layout.setSpacing(15)
         
         # Título
-        title = SectionTitle("GESTIÓN DE LOCKERS DIARIOS")
-        layout.addWidget(title)
+        #title = SectionTitle("GESTIÓN DE LOCKERS DIARIOS")
+        #layout.addWidget(title)
         
         # Table widget (solo lectura, no editable)
         self.table = QTableWidget()
@@ -121,12 +121,16 @@ class AsignarLockerDiarioWindow(QWidget):
         layout.addLayout(button_layout)
     
     def cargar_asignaciones(self):
-        """Cargar asignaciones activas de lockers diarios (id_producto_digital = 19)"""
+        """Cargar asignaciones activas de lockers diarios del historial"""
         try:
-            # Query con JOINs para obtener datos relacionados
-            response = self.pg_manager.client.table('asignaciones_activas').select(
+            # Query con JOINs para obtener datos relacionados del historial de lockers diarios
+            # Solo obtener los registros del día de hoy que aún no han sido devueltos
+            from datetime import date
+            hoy = str(date.today())
+            
+            response = self.pg_manager.client.table('historial_lockers_diarios').select(
                 '*, miembros(nombres, apellido_paterno, apellido_materno), lockers(numero, ubicacion, tipo)'
-            ).eq('id_producto_digital', 19).eq('activa', True).eq('cancelada', False).order('fecha_registro', desc=True).execute()
+            ).eq('fecha_asignacion', hoy).eq('devuelto', False).order('hora_asignacion', desc=True).execute()
             
             self.asignaciones_data = response.data or []
             self.poblar_tabla()
@@ -148,8 +152,8 @@ class AsignarLockerDiarioWindow(QWidget):
                 # Datos
                 miembro = asig.get('miembros', {})
                 locker = asig.get('lockers', {})
-                id_asignacion = asig['id_asignacion']
-                fecha_registro = asig.get('fecha_registro', '')
+                id_historial = asig['id_historial']
+                hora_asignacion = asig.get('hora_asignacion', '')
                 
                 # Columna 1: Miembro (read-only)
                 nombre_completo = f"{miembro.get('nombres', '')} {miembro.get('apellido_paterno', '')} {miembro.get('apellido_materno', '')}".strip()
@@ -167,16 +171,16 @@ class AsignarLockerDiarioWindow(QWidget):
                 # Columna 3: Hora de Creación (read-only)
                 try:
                     # Convertir timestamp a hora legible
-                    if fecha_registro:
-                        if 'T' in str(fecha_registro):
-                            dt = datetime.fromisoformat(str(fecha_registro).replace('Z', '+00:00'))
+                    if hora_asignacion:
+                        if 'T' in str(hora_asignacion):
+                            dt = datetime.fromisoformat(str(hora_asignacion).replace('Z', '+00:00'))
                         else:
-                            dt = datetime.fromisoformat(str(fecha_registro))
+                            dt = datetime.fromisoformat(str(hora_asignacion))
                         hora_texto = dt.strftime('%d/%m/%Y %H:%M:%S')
                     else:
                         hora_texto = '-'
                 except:
-                    hora_texto = str(fecha_registro) if fecha_registro else '-'
+                    hora_texto = str(hora_asignacion) if hora_asignacion else '-'
                 
                 item_hora = QTableWidgetItem(hora_texto)
                 item_hora.setFlags(item_hora.flags() & ~Qt.ItemIsEditable)
@@ -199,7 +203,7 @@ class AsignarLockerDiarioWindow(QWidget):
                         background-color: #c62828;
                     }}
                 """)
-                btn_devolver.clicked.connect(lambda checked, asig_id=id_asignacion: self.devolver_locker(asig_id))
+                btn_devolver.clicked.connect(lambda checked, hist_id=id_historial: self.devolver_locker(hist_id))
                 self.table.setCellWidget(idx, 3, btn_devolver)
                 
                 # Altura de fila
@@ -209,8 +213,8 @@ class AsignarLockerDiarioWindow(QWidget):
             logging.error(f"Error poblando tabla: {e}")
     
     
-    def devolver_locker(self, id_asignacion):
-        """Cancelar una asignación de locker diario y liberar la llave"""
+    def devolver_locker(self, id_historial):
+        """Marcar locker como devuelto en el historial"""
         try:
             # Confirmar devolución
             if not show_confirmation_dialog(
@@ -220,16 +224,16 @@ class AsignarLockerDiarioWindow(QWidget):
             ):
                 return
             
-            # Actualizar asignación: cancelada = True, fecha_cancelacion = NOW()
+            # Actualizar historial: devuelto = True, hora_devolucion = NOW()
             from datetime import datetime
             update_data = {
-                'cancelada': True,
-                'fecha_cancelacion': datetime.now().isoformat()
+                'devuelto': True,
+                'hora_devolucion': datetime.now().isoformat()
             }
             
-            response = self.pg_manager.client.table('asignaciones_activas').update(
+            response = self.pg_manager.client.table('historial_lockers_diarios').update(
                 update_data
-            ).eq('id_asignacion', id_asignacion).execute()
+            ).eq('id_historial', id_historial).execute()
             
             if response.data:
                 show_success_dialog(
@@ -238,7 +242,7 @@ class AsignarLockerDiarioWindow(QWidget):
                     "Llave devuelta correctamente. El locker ha sido liberado."
                 )
                 
-                logging.info(f"Locker devuelto - Asignación {id_asignacion} cancelada")
+                logging.info(f"Locker devuelto - Historial {id_historial} marcado como devuelto")
                 
                 # Recargar tabla
                 self.cargar_asignaciones()
@@ -349,7 +353,7 @@ class AsignarLockerDiarioDialog(QDialog):
         layout.addLayout(buttons_layout)
     
     def cargar_miembros(self):
-        """Cargar miembros activos sin locker asignado"""
+        """Cargar miembros activos sin locker asignado hoy"""
         try:
             # Obtener todos los miembros activos
             response_miembros = self.pg_manager.client.table('miembros').select(
@@ -358,11 +362,11 @@ class AsignarLockerDiarioDialog(QDialog):
             
             miembros = response_miembros.data or []
             
-            # Obtener IDs de miembros con locker diario asignado HOY (sin importar si está activa o cancelada)
-            hoy = date.today()
-            response_asignados = self.pg_manager.client.table('asignaciones_activas').select(
+            # Obtener IDs de miembros que TUVIERON UN LOCKER HOY (sin importar si lo devolvieron)
+            hoy = str(date.today())
+            response_asignados = self.pg_manager.client.table('historial_lockers_diarios').select(
                 'id_miembro'
-            ).eq('id_producto_digital', 19).eq('fecha_inicio', str(hoy)).execute()
+            ).eq('fecha_asignacion', hoy).execute()
             
             ids_con_locker_diario_hoy = {item['id_miembro'] for item in (response_asignados.data or [])}
             
@@ -380,19 +384,20 @@ class AsignarLockerDiarioDialog(QDialog):
             show_error_dialog(self, "Error", f"No se pudieron cargar los miembros: {str(e)}")
     
     def cargar_lockers_diarios(self):
-        """Cargar lockers de renta diaria disponibles"""
+        """Cargar lockers de renta diaria disponibles hoy"""
         try:
-            # Obtener todos los lockers de renta_diaria activos
+            # Obtener todos los lockers de tipo 'renta_diaria' activos, ordenados por id
             response_todos = self.pg_manager.client.table('lockers').select(
                 'id_locker, numero, ubicacion'
             ).eq('tipo', 'renta_diaria').eq('activo', True).order('id_locker', desc=False).execute()
             
             todos_lockers = response_todos.data or []
             
-            # Obtener IDs de lockers ya asignados (activos y no cancelados)
-            response_asignados = self.pg_manager.client.table('asignaciones_activas').select(
+            # Obtener IDs de lockers ya asignados hoy (no devueltos)
+            hoy = str(date.today())
+            response_asignados = self.pg_manager.client.table('historial_lockers_diarios').select(
                 'id_locker'
-            ).eq('id_producto_digital', 19).eq('activa', True).eq('cancelada', False).execute()
+            ).eq('fecha_asignacion', hoy).eq('devuelto', False).execute()
             
             ids_asignados = {item['id_locker'] for item in (response_asignados.data or [])}
             
@@ -423,24 +428,20 @@ class AsignarLockerDiarioDialog(QDialog):
             return
         
         try:
-            # Obtener hoy como fecha (vigencia solo para el día actual)
-            hoy = date.today()
+            # Obtener hoy como fecha
+            hoy = str(date.today())
             
-            # Insertar en asignaciones_activas
-            # id_producto_digital = 19 (locker diario)
-            # id_venta = NULL (sin costo)
-            # fecha_fin = hoy (mismo día para múltiples usos durante el día)
+            # Insertar en historial_lockers_diarios
             asignacion_data = {
                 'id_miembro': id_miembro,
-                'id_producto_digital': 19,
                 'id_locker': id_locker,
-                'fecha_inicio': str(hoy),
-                'fecha_fin': str(hoy),
-                'activa': True,
-                'id_venta': None  # Sin venta
+                'fecha_asignacion': hoy,
+                'hora_asignacion': datetime.now().isoformat(),
+                'entregado': True,
+                'devuelto': False
             }
             
-            response = self.pg_manager.client.table('asignaciones_activas').insert(asignacion_data).execute()
+            response = self.pg_manager.client.table('historial_lockers_diarios').insert(asignacion_data).execute()
             
             if response.data:
                 nombre_miembro = self.combo_miembro.currentText()

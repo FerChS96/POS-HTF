@@ -255,7 +255,7 @@ class SupabaseService:
             today = datetime.now().date().isoformat()
             response = self.client.table('registro_entradas')\
                 .select('id_miembro', count='exact')\
-                .eq('tipo_acceso', 'miembro')\
+                .in_('tipo_acceso', ['miembro', 'uso_beneficio'])\
                 .gte('fecha_entrada', f"{today}T00:00:00")\
                 .lte('fecha_entrada', f"{today}T23:59:59")\
                 .execute()
@@ -333,7 +333,7 @@ class SupabaseService:
             response = self.client.table('registro_entradas')\
                 .select('*')\
                 .eq('id_miembro', id_miembro)\
-                .eq('tipo_acceso', 'miembro')\
+                .in_('tipo_acceso', ['miembro', 'uso_beneficio'])\
                 .order('fecha_entrada', desc=True)\
                 .limit(limit)\
                 .execute()
@@ -363,11 +363,13 @@ class SupabaseService:
             return []
     
     def get_lockers_status(self):
-        """Obtener estado de lockers desde Supabase"""
+        """Obtener estado de lockers desde Supabase (asignaciones + historial diario)"""
         if not self.is_connected:
             return {'total': 0, 'occupied': 0, 'available': 0}
         
         try:
+            from datetime import date
+            
             # Total de lockers
             total_response = self.client.table('lockers')\
                 .select('id_locker', count='exact')\
@@ -376,7 +378,7 @@ class SupabaseService:
             
             total = total_response.count if total_response.count is not None else 0
             
-            # Lockers ocupados (asignaciones activas con locker - solo productos 9 y 19)
+            # Lockers ocupados en asignaciones_activas (solo productos 9 y 19)
             occupied_response = self.client.table('asignaciones_activas')\
                 .select('id_locker', count='exact')\
                 .eq('activa', True)\
@@ -385,7 +387,20 @@ class SupabaseService:
                 .in_('id_producto_digital', [9, 19])\
                 .execute()
             
-            occupied = occupied_response.count if occupied_response.count is not None else 0
+            occupied_asignaciones = occupied_response.count if occupied_response.count is not None else 0
+            
+            # Lockers ocupados en historial_lockers_diarios (hoy sin devolver)
+            hoy = str(date.today())
+            occupied_historial_response = self.client.table('historial_lockers_diarios')\
+                .select('id_locker', count='exact')\
+                .eq('fecha_asignacion', hoy)\
+                .eq('devuelto', False)\
+                .execute()
+            
+            occupied_historial = occupied_historial_response.count if occupied_historial_response.count is not None else 0
+            
+            # Sumar ocupados de ambas tablas (evitar duplicados considerando que son de tipos diferentes)
+            occupied = occupied_asignaciones + occupied_historial
             
             return {
                 'total': total,

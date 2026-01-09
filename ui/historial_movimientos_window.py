@@ -127,7 +127,7 @@ class HistorialMovimientosWindow(QWidget):
         
         # Contenido
         content = QWidget()
-        content_layout = create_page_layout("HISTORIAL DE MOVIMIENTOS")
+        content_layout = create_page_layout("")
         content.setLayout(content_layout)
         
         # Panel de filtros

@@ -256,8 +256,8 @@ class LockersWindow(QWidget):
         layout.setSpacing(WindowsPhoneTheme.MARGIN_SMALL)
         
         # Título
-        title = SectionTitle("CATÁLOGO DE LOCKERS")
-        layout.addWidget(title)
+        # title = SectionTitle("CATÁLOGO DE LOCKERS")
+        #layout.addWidget(title)
         
         # Buscador
         self.search_bar = SearchBar("Buscar por número o ubicación...")

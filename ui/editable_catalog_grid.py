@@ -55,12 +55,12 @@ class EditableCatalogGrid(QWidget):
         content.setLayout(content_layout)
         
         # Panel de información
-        info_panel = ContentPanel()
-        info_layout = QHBoxLayout(info_panel)
-        info_label = StyledLabel("Seleccione productos para editar. Los cambios se guardarán en la base de datos.", 
-                                 size=WindowsPhoneTheme.FONT_SIZE_SMALL)
-        info_layout.addWidget(info_label, stretch=1)
-        content_layout.addWidget(info_panel)
+        #info_panel = ContentPanel()
+        #info_layout = QHBoxLayout(info_panel)
+        #info_label = StyledLabel("Seleccione productos para editar. Los cambios se guardarán en la base de datos.", 
+        #                        size=WindowsPhoneTheme.FONT_SIZE_SMALL)
+        #info_layout.addWidget(info_label, stretch=1)
+        #content_layout.addWidget(info_panel)
         
         # Tabs para tipos de productos
         self.tab_widget = QTabWidget()

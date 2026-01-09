@@ -155,8 +155,8 @@ class CierreCajaWindow(QWidget):
         cash_layout.setSpacing(15)
         
         # Título
-        title = SectionTitle("CONTEO DE EFECTIVO")
-        cash_layout.addWidget(title)
+        #title = SectionTitle("")
+        #cash_layout.addWidget(title)
         
         # Grid simplificado
         form_layout = QGridLayout()

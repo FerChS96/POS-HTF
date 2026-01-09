@@ -65,7 +65,7 @@ class NuevoProductoWindow(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         
         content = QWidget()
-        content_layout = create_page_layout("NUEVO PRODUCTO")
+        content_layout = create_page_layout("")
         content.setLayout(content_layout)
         
         # Panel del formulario

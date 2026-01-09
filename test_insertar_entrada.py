@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Script para insertar una entrada de prueba en la tabla registro_entradas
-con un miembro seleccionado por el usuario de la tabla miembros
+con un miembro seleccionado por el usuario de la tabla miembros.
+Soporta visitas normales y uso de beneficios.
 """
 
 import sys
@@ -44,8 +45,8 @@ def get_current_time_mexico():
 def main():
     """Función principal para insertar una entrada de prueba con miembro seleccionado por usuario"""
 
-    print("🧪 Insertando entrada de prueba en registro_entradas (selección manual)")
-    print("=" * 70)
+    print("🧪 Insertando entrada de prueba en registro_entradas (visita normal o beneficio)")
+    print("=" * 80)
 
     try:
         # Inicializar servicios
@@ -144,12 +145,81 @@ def main():
                 print(f"❌ Error procesando entrada: {e}")
                 continue
 
+        # Seleccionar tipo de acceso
+        print("\n🎯 Selecciona el tipo de acceso:")
+        print("  1. Visita normal al gimnasio")
+        print("  2. Uso de beneficio (regaderas, vapores, acompañante, etc.)")
+        
+        tipo_acceso_seleccionado = None
+        beneficio_seleccionado = None
+        
+        while True:
+            try:
+                print(f"\n🔍 Selecciona el tipo de acceso (1-2): ", end="")
+                tipo_input = input().strip()
+                
+                if tipo_input == '1':
+                    tipo_acceso_seleccionado = 'miembro'
+                    beneficio_seleccionado = 'Gimnasio'
+                    print("✅ Tipo seleccionado: Visita normal al gimnasio")
+                    break
+                elif tipo_input == '2':
+                    tipo_acceso_seleccionado = 'uso_beneficio'
+                    print("✅ Tipo seleccionado: Uso de beneficio")
+                    
+                    # Seleccionar tipo de beneficio
+                    print("\n🛁 Selecciona el tipo de beneficio:")
+                    print("  1. Regaderas")
+                    print("  2. Vapores/Sauna")
+                    print("  3. Acompañante")
+                    print("  4. Invitado")
+                    print("  5. Otro beneficio")
+                    
+                    while True:
+                        print(f"🔍 Selecciona el beneficio (1-5): ", end="")
+                        beneficio_input = input().strip()
+                        
+                        if beneficio_input == '1':
+                            beneficio_seleccionado = 'Regaderas'
+                            break
+                        elif beneficio_input == '2':
+                            beneficio_seleccionado = 'Vapores'
+                            break
+                        elif beneficio_input == '3':
+                            beneficio_seleccionado = 'Acompañante'
+                            break
+                        elif beneficio_input == '4':
+                            beneficio_seleccionado = 'Invitado'
+                            break
+                        elif beneficio_input == '5':
+                            print("Especifica el beneficio: ", end="")
+                            beneficio_seleccionado = input().strip()
+                            if beneficio_seleccionado:
+                                break
+                            else:
+                                print("❌ El beneficio no puede estar vacío")
+                        else:
+                            print("❌ Opción no válida. Selecciona 1-5.")
+                    
+                    print(f"✅ Beneficio seleccionado: {beneficio_seleccionado}")
+                    break
+                else:
+                    print("❌ Opción no válida. Selecciona 1 o 2.")
+                    
+            except KeyboardInterrupt:
+                print("\n⏹️  Operación cancelada por el usuario")
+                return 0
+            except Exception as e:
+                print(f"❌ Error procesando selección: {e}")
+                continue
+
         # Preparar datos de entrada
         current_time = get_current_time_mexico()
         entrada_data = {
             'id_miembro': miembro_seleccionado['id_miembro'],
-            'tipo_acceso': 'miembro',
-            'area_accedida': 'Gimnasio',
+            'tipo_acceso': tipo_acceso_seleccionado,
+            'area_accedida': beneficio_seleccionado,
+            'fecha_entrada': current_time.strftime('%Y-%m-%d %H:%M:%S'),  # Fecha sin zona horaria
             'dispositivo_registro': 'Test Script',
             'notas': f'Entrada de prueba generada automáticamente - {current_time.strftime("%Y-%m-%d %H:%M:%S")} (CDMX)',
             'autorizado_por': 'Sistema de Pruebas'
@@ -174,9 +244,11 @@ def main():
 
             if response.data:
                 id_entrada = response.data[0]['id_entrada']
+                tipo_acceso_texto = "visita normal" if tipo_acceso_seleccionado == 'miembro' else f"uso de beneficio ({beneficio_seleccionado})"
                 print("✅ ¡Entrada insertada exitosamente!")
                 print(f"   🆔 ID de entrada: {id_entrada}")
                 print(f"   👤 Miembro: {nombre_completo}")
+                print(f"   🎯 Tipo: {tipo_acceso_texto}")
                 print(f"   📅 Fecha: {current_time.strftime('%Y-%m-%d %H:%M:%S')} (CDMX)")
 
                 print("\n🎉 ¡El monitor de entradas debería detectar esta nueva entrada!")

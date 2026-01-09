@@ -58,9 +58,9 @@ class AsignacionTurnosWindow(QWidget):
                                  WindowsPhoneTheme.MARGIN_MEDIUM)
         layout.setSpacing(WindowsPhoneTheme.MARGIN_SMALL)
         
-        # Título
-        title = SectionTitle("ASIGNACIÓN DE TURNOS")
-        layout.addWidget(title)
+        # El título viene del TopBar, no duplicar aquí
+        # title = SectionTitle("")
+        # layout.addWidget(title)
         
         # Layout horizontal para dos columnas
         content_layout = QHBoxLayout()

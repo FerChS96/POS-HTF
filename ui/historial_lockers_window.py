@@ -63,7 +63,7 @@ class HistorialLockersWindow(QWidget):
         
         # Contenido
         content = QWidget()
-        content_layout = create_page_layout("HISTORIAL DE LOCKERS")
+        content_layout = create_page_layout("")
         content.setLayout(content_layout)
         
         # Buscador
@@ -289,14 +289,13 @@ class HistorialLockersWindow(QWidget):
         self.cargar_historial_completo()
     
     def cargar_historial_completo(self):
-        """Cargar historial completo de asignaciones de lockers desde la base de datos"""
+        """Cargar historial completo de asignaciones de lockers (mensual + diario)"""
         try:
             fecha_desde = self.fecha_desde.date().toPython()
             fecha_hasta = self.fecha_hasta.date().toPython()
             
-            # Consultar asignaciones que se solapan con el rango de fechas seleccionado
-            # fecha_inicio <= fecha_hasta AND fecha_fin >= fecha_desde
-            response = self.pg_manager.client.table('asignaciones_activas').select(
+            # Consultar asignaciones de lockers mensuales
+            response_mensual = self.pg_manager.client.table('asignaciones_activas').select(
                 '''id_asignacion, 
                    id_miembro, 
                    id_locker, 
@@ -314,16 +313,48 @@ class HistorialLockersWindow(QWidget):
                 'fecha_fin', f'{fecha_desde}'
             ).order('fecha_inicio', desc=True).execute()
             
-            self.lockers_data = response.data or []
+            asignaciones_mensual = response_mensual.data or []
             
-            # Aplicar filtros
-            self.aplicar_filtros()
+            # Consultar historial de lockers diarios en el rango de fechas
+            response_diario = self.pg_manager.client.table('historial_lockers_diarios').select(
+                '''id_historial,
+                   id_miembro,
+                   id_locker,
+                   fecha_asignacion,
+                   hora_asignacion,
+                   hora_devolucion,
+                   entregado,
+                   devuelto,
+                   miembros(nombres, apellido_paterno, apellido_materno),
+                   lockers(numero)
+                '''
+            ).gte('fecha_asignacion', f'{fecha_desde}').lte(
+                'fecha_asignacion', f'{fecha_hasta}'
+            ).order('fecha_asignacion', desc=True).execute()
             
-        except Exception as e:
-            logging.error(f"Error cargando historial de lockers: {e}")
-            show_warning_dialog(self, "Error", f"Error al cargar historial: {e}")
+            historial_diario = response_diario.data or []
             
-            self.lockers_data = response.data or []
+            # Transformar datos del historial diario al formato de asignaciones para compatibilidad
+            historial_diario_transformado = []
+            for registro in historial_diario:
+                # Convertir registro diario al formato de asignaciones
+                registro_transformado = {
+                    'id_asignacion': registro.get('id_historial'),
+                    'id_miembro': registro.get('id_miembro'),
+                    'id_locker': registro.get('id_locker'),
+                    'id_producto_digital': 19,  # Marcar como diario (ID 19)
+                    'fecha_inicio': registro.get('fecha_asignacion'),
+                    'fecha_fin': registro.get('fecha_asignacion'),
+                    'cancelada': registro.get('devuelto'),  # Si fue devuelto, considerar como "cancelada"
+                    'fecha_cancelacion': registro.get('hora_devolucion'),
+                    'miembros': registro.get('miembros'),
+                    'lockers': registro.get('lockers'),
+                    'es_historial_diario': True  # Marcar origen
+                }
+                historial_diario_transformado.append(registro_transformado)
+            
+            # Combinar ambas listas
+            self.lockers_data = asignaciones_mensual + historial_diario_transformado
             
             # Aplicar filtros
             self.aplicar_filtros()
@@ -375,7 +406,7 @@ class HistorialLockersWindow(QWidget):
             logging.error(f"Error aplicando filtros: {e}")
     
     def actualizar_tabla(self, asignaciones, mostrar_paginacion=False):
-        """Actualizar tabla con las asignaciones filtradas"""
+        """Actualizar tabla con las asignaciones filtradas (mensual + diario)"""
         try:
             self.history_table.setRowCount(len(asignaciones))
             
@@ -395,8 +426,12 @@ class HistorialLockersWindow(QWidget):
                     locker_numero = f"Locker {asignacion['lockers'].get('numero', 'N/A')}"
                 self.history_table.setItem(row, 1, QTableWidgetItem(locker_numero))
                 
-                # Tipo de locker
-                tipo = "Mensual" if asignacion.get('id_producto_digital') == 9 else "Diario"
+                # Tipo de locker (Mensual o Diario)
+                # Si es del historial diario, mostrar "Diario", si no verificar id_producto_digital
+                if asignacion.get('es_historial_diario'):
+                    tipo = "Diario (Historial)"
+                else:
+                    tipo = "Mensual" if asignacion.get('id_producto_digital') == 9 else "Diario"
                 self.history_table.setItem(row, 2, QTableWidgetItem(tipo))
                 
                 # Fecha inicio
@@ -407,11 +442,11 @@ class HistorialLockersWindow(QWidget):
                 fecha_fin = asignacion.get('fecha_fin', 'N/A')
                 self.history_table.setItem(row, 4, QTableWidgetItem(str(fecha_fin)))
                 
-                # Cancelada (Sí/No)
+                # Estado (Cancelada o Devuelto)
                 cancelada = "Sí" if asignacion.get('cancelada') else "No"
                 self.history_table.setItem(row, 5, QTableWidgetItem(cancelada))
                 
-                # Hora de cancelación (dividiendo el timestamp)
+                # Hora de cancelación/devolución
                 hora_cancelacion = "N/A"
                 if asignacion.get('fecha_cancelacion'):
                     fecha_cancel_str = asignacion['fecha_cancelacion']

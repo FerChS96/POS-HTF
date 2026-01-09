@@ -101,7 +101,7 @@ class HistorialAccesoWindow(QWidget):
         
         # Contenido
         content = QWidget()
-        content_layout = create_page_layout("HISTORIAL DE ACCESO")
+        content_layout = create_page_layout("")
         content.setLayout(content_layout)
         
         # Panel de filtros
@@ -161,9 +161,10 @@ class HistorialAccesoWindow(QWidget):
         self.tipo_combo = QComboBox()
         self.tipo_combo.addItems([
             "Todos",
-            "Miembro",
-            "Personal",
-            "Visitante"
+            "miembro",
+            "uso_beneficio",
+            "personal",
+            "visitante"
         ])
         self.tipo_combo.setMinimumHeight(40)
         self.tipo_combo.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_NORMAL))
@@ -210,7 +211,7 @@ class HistorialAccesoWindow(QWidget):
         fecha_inicio_layout.addWidget(fecha_inicio_label)
         
         self.fecha_inicio = QDateEdit()
-        self.fecha_inicio.setDate(QDate.currentDate().addDays(-7))  # Últimos 7 días
+        self.fecha_inicio.setDate(QDate.currentDate().addDays(-30))  # Últimos 30 días
         self.fecha_inicio.setCalendarPopup(True)
         aplicar_estilo_fecha(self.fecha_inicio)
         self.fecha_inicio.setMinimumHeight(40)
@@ -357,6 +358,10 @@ class HistorialAccesoWindow(QWidget):
                     miembro = row['miembros']
                     nombre_completo = f"{miembro.get('nombres', '')} {miembro.get('apellido_paterno', '')} {miembro.get('apellido_materno', '')}".strip()
                     codigo = miembro.get('codigo_qr', 'N/A')
+                elif tipo_acceso == 'uso_beneficio' and row.get('miembros'):
+                    miembro = row['miembros']
+                    nombre_completo = f"{miembro.get('nombres', '')} {miembro.get('apellido_paterno', '')} {miembro.get('apellido_materno', '')}".strip()
+                    codigo = miembro.get('codigo_qr', 'N/A')
                 elif tipo_acceso == 'personal' and row.get('personal'):
                     personal = row['personal']
                     nombre_completo = f"{personal.get('nombres', '')} {personal.get('apellido_paterno', '')} {personal.get('apellido_materno', '')}".strip()
@@ -473,13 +478,21 @@ class HistorialAccesoWindow(QWidget):
                 self.accesos_table.setItem(row, 0, item_entrada)
                 
                 # Tipo de acceso
-                tipo = acceso['tipo_acceso'].capitalize()
-                item_tipo = QTableWidgetItem(tipo)
+                tipo_raw = acceso['tipo_acceso']
+                # Convertir a formato legible
+                if tipo_raw == 'uso_beneficio':
+                    tipo_display = 'Uso Beneficio'
+                else:
+                    tipo_display = tipo_raw.capitalize()
+                
+                item_tipo = QTableWidgetItem(tipo_display)
                 item_tipo.setTextAlignment(Qt.AlignCenter)
                 
                 # Color según tipo
                 if acceso['tipo_acceso'].lower() == 'miembro':
                     item_tipo.setForeground(Qt.darkBlue)
+                elif acceso['tipo_acceso'].lower() == 'uso_beneficio':
+                    item_tipo.setForeground(Qt.darkMagenta)
                 elif acceso['tipo_acceso'].lower() == 'personal':
                     item_tipo.setForeground(Qt.darkGreen)
                 else:
@@ -574,7 +587,7 @@ class HistorialAccesoWindow(QWidget):
         self.search_bar.clear()
         self.tipo_combo.setCurrentIndex(0)
         self.estado_combo.setCurrentIndex(0)
-        self.fecha_inicio.setDate(QDate.currentDate().addDays(-7))
+        self.fecha_inicio.setDate(QDate.currentDate().addDays(-30))
         self.fecha_fin.setDate(QDate.currentDate())
         self.aplicar_filtros()
     
