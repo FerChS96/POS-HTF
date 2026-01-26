@@ -230,19 +230,52 @@ class ConfirmarPagoDialog(QDialog):
             
             # Usar Edge Function de Supabase para confirmar pago
             id_notificacion = self.notificacion['id_notificacion']
+            id_venta_digital = self.notificacion.get('id_venta_digital')
+            if not id_venta_digital:
+                # Intentar obtenerlo desde BD
+                detalle = self.pg_manager.obtener_detalle_notificacion(id_notificacion)
+                if detalle:
+                    id_venta_digital = detalle.get('id_venta_digital')
             
             if self.supabase_service and self.supabase_service.is_connected:
                 logging.info(f"[PAGO] Confirmando pago {id_notificacion} con Edge Function")
-                
-                resultado = self.supabase_service.confirmar_pago_efectivo_edge(id_notificacion)
+
+                if not id_venta_digital:
+                    show_error_dialog(self, "Error", "No se pudo determinar id_venta_digital para confirmar el pago.")
+                    return
+
+                ids_para_contabilizar = self.pg_manager.get_ventas_digitales_pendientes_efectivo_hoy(int(id_venta_digital))
+                if not ids_para_contabilizar:
+                    ids_para_contabilizar = [int(id_venta_digital)]
+
+                resultado = self.supabase_service.confirmar_pago_efectivo_edge(int(id_venta_digital))
                 
                 if resultado.get('success'):
+                    # Contabilizar en POS para que aparezca en corte
+                    turno_id = self.pg_manager.get_turno_abierto_id(self.user_data.get('id_usuario'))
+                    venta_contable_id = None
+                    if turno_id:
+                        venta_contable_id = self.pg_manager.contabilizar_pago_efectivo_digital_en_pos(
+                            ids_para_contabilizar,
+                            self.user_data.get('id_usuario'),
+                            turno_id,
+                        )
+                    else:
+                        logging.warning("No hay turno abierto: pago confirmado pero no contabilizado en POS")
+
                     logging.info(f"✅ Pago confirmado por Edge Function: {resultado.get('message')}")
-                    show_success_dialog(
-                        self,
-                        "Pago Confirmado",
-                        "El pago ha sido confirmado exitosamente.\nLa membresía/visita está activada."
-                    )
+                    if venta_contable_id:
+                        show_success_dialog(
+                            self,
+                            "Pago Confirmado",
+                            f"El pago ha sido confirmado exitosamente.\nLa membresía/visita está activada.\n\nVenta POS: {venta_contable_id}"
+                        )
+                    else:
+                        show_warning_dialog(
+                            self,
+                            "Pago Confirmado (sin corte)",
+                            "El pago fue confirmado, pero no se pudo registrar la venta en el POS para el corte.\n\nVerifique que exista un turno abierto.",
+                        )
                     logging.info(f"Pago confirmado exitosamente para notificación {id_notificacion}")
                     self.accept()
                     return
@@ -256,6 +289,20 @@ class ConfirmarPagoDialog(QDialog):
             )
             
             if exito:
+                # Intentar contabilizar también en modo local
+                try:
+                    if id_venta_digital and self.user_data.get('id_usuario'):
+                        turno_id = self.pg_manager.get_turno_abierto_id(self.user_data.get('id_usuario'))
+                        if turno_id:
+                            ids_para_contabilizar = self.pg_manager.get_ventas_digitales_pendientes_efectivo_hoy(int(id_venta_digital)) or [int(id_venta_digital)]
+                            self.pg_manager.contabilizar_pago_efectivo_digital_en_pos(
+                                ids_para_contabilizar,
+                                self.user_data.get('id_usuario'),
+                                turno_id,
+                            )
+                except Exception as contabilizar_error:
+                    logging.warning(f"No se pudo contabilizar en POS (modo local): {contabilizar_error}")
+
                 show_success_dialog(
                     self,
                     "Pago Confirmado",

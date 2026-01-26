@@ -343,9 +343,30 @@ class PagosEfectivoWindow(QDialog):
             if self.supabase_service and self.supabase_service.is_connected:
                 logging.info(f"[PAGO EFECTIVO] Llamando Edge Function para notificación {id_notificacion}")
                 
-                result = self.supabase_service.confirmar_pago_efectivo_edge(id_notificacion)
+                id_venta_digital = notif_dict.get('id_venta_digital')
+                if not id_venta_digital:
+                    show_error_dialog(self, "Error", "La notificación no tiene id_venta_digital. No se puede confirmar.")
+                    return
+
+                ids_para_contabilizar = self.pg_manager.get_ventas_digitales_pendientes_efectivo_hoy(int(id_venta_digital))
+                if not ids_para_contabilizar:
+                    ids_para_contabilizar = [int(id_venta_digital)]
+
+                result = self.supabase_service.confirmar_pago_efectivo_edge(int(id_venta_digital))
                 
                 if result.get('success'):
+                    # Contabilizar en POS para que aparezca en corte
+                    turno_id = self.pg_manager.get_turno_abierto_id(self.user_data.get('id_usuario'))
+                    venta_contable_id = None
+                    if turno_id:
+                        venta_contable_id = self.pg_manager.contabilizar_pago_efectivo_digital_en_pos(
+                            ids_para_contabilizar,
+                            self.user_data.get('id_usuario'),
+                            turno_id,
+                        )
+                    else:
+                        logging.warning("No hay turno abierto: pago confirmado pero no contabilizado en POS")
+
                     # Refrescar lista
                     self.cargar_notificaciones()
 
@@ -357,7 +378,14 @@ class PagosEfectivoWindow(QDialog):
                     })
                     
                     logging.info(f"✅ Pago procesado exitosamente: {result.get('message')}")
-                    show_info_dialog(self, "Pago Confirmado", "El pago ha sido procesado exitosamente.")
+                    if venta_contable_id:
+                        show_info_dialog(self, "Pago Confirmado", f"El pago ha sido procesado exitosamente.\n\nVenta POS: {venta_contable_id}")
+                    else:
+                        show_warning_dialog(
+                            self,
+                            "Pago Confirmado (sin corte)",
+                            "El pago fue confirmado, pero no se pudo registrar la venta en el POS para el corte.\n\nVerifique que exista un turno abierto.",
+                        )
                 else:
                     logging.warning(f"Edge Function retornó error: {result.get('message')}")
                     
@@ -366,6 +394,21 @@ class PagosEfectivoWindow(QDialog):
                     success = self.pg_manager.confirmar_pago_efectivo(id_notificacion)
                     
                     if success:
+                        # En modo local también intentar contabilizar (mismo mecanismo)
+                        try:
+                            id_venta_digital = notif_dict.get('id_venta_digital')
+                            if id_venta_digital:
+                                turno_id = self.pg_manager.get_turno_abierto_id(self.user_data.get('id_usuario'))
+                                if turno_id:
+                                    ids_para_contabilizar = self.pg_manager.get_ventas_digitales_pendientes_efectivo_hoy(int(id_venta_digital)) or [int(id_venta_digital)]
+                                    self.pg_manager.contabilizar_pago_efectivo_digital_en_pos(
+                                        ids_para_contabilizar,
+                                        self.user_data.get('id_usuario'),
+                                        turno_id,
+                                    )
+                        except Exception as contabilizar_error:
+                            logging.warning(f"No se pudo contabilizar en POS (fallback local): {contabilizar_error}")
+
                         self.cargar_notificaciones()
                         self.pago_confirmado.emit({
                             "id_notificacion": id_notificacion,

@@ -411,12 +411,12 @@ class SupabaseService:
             logging.error(f"Error obteniendo estado de lockers: {e}")
             return {'total': 0, 'occupied': 0, 'available': 0}
     
-    def confirmar_pago_efectivo_edge(self, id_notificacion: int) -> dict:
+    def confirmar_pago_efectivo_edge(self, id_venta_digital: int) -> dict:
         """
         Llamar Edge Function de Supabase para confirmar pago en efectivo
         
         Args:
-            id_notificacion: ID de la notificación de pago
+            id_venta_digital: ID de la venta digital
         
         Returns:
             Diccionario con resultado: {'success': bool, 'message': str, 'data': dict}
@@ -434,7 +434,7 @@ class SupabaseService:
                 'confirm-cash-payment',
                 invoke_options={
                     'body': {
-                        'id_notificacion': id_notificacion
+                        'id_venta_digital': id_venta_digital
                     }
                 }
             )

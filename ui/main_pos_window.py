@@ -153,6 +153,7 @@ class MainPOSWindow(QMainWindow):
         nav_layout.setSpacing(0)
         
         # Definir pestañas con iconos y colores
+        role = (self.user_data.get('rol') or '').lower()
         tabs = [
             {"name": "Ventas", "icon": "fa5s.shopping-cart", "color": WindowsPhoneTheme.TILE_RED, "index": 0},
             {"name": "Inventario", "icon": "fa5s.boxes", "color": WindowsPhoneTheme.TILE_GREEN, "index": 1},
@@ -160,18 +161,24 @@ class MainPOSWindow(QMainWindow):
             {"name": "Admin", "icon": "fa5s.user-shield", "color": WindowsPhoneTheme.TILE_PURPLE, "index": 3},
             {"name": "Config", "icon": "fa5s.cog", "color": WindowsPhoneTheme.TILE_GRAY, "index": 4},
         ]
+
+        # UI-only control de acceso: recepcionista no ve Inventario/Admin
+        if role == 'recepcionista':
+            tabs = [t for t in tabs if t['name'] not in ('Inventario', 'Admin')]
         
         # Crear botones usando componente TabButton
         self.tab_buttons = []
         for tab in tabs:
             btn = TabButton(tab['name'], tab['icon'], tab['color'])
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            btn._tab_index = tab['index']
             btn.clicked.connect(lambda checked, idx=tab['index']: self.switch_tab(idx))
             nav_layout.addWidget(btn)
             self.tab_buttons.append(btn)
         
         # Activar primera pestaña
-        self.tab_buttons[0].setChecked(True)
+        if self.tab_buttons:
+            self.tab_buttons[0].setChecked(True)
         
         parent_layout.addWidget(self.nav_bar)
         
@@ -181,8 +188,9 @@ class MainPOSWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(index)
         
         # Actualizar estado visual de botones
-        for i, btn in enumerate(self.tab_buttons):
-            btn.setChecked(i == index)
+        for btn in self.tab_buttons:
+            btn_index = getattr(btn, '_tab_index', None)
+            btn.setChecked(btn_index == index)
             
         logging.info(f"Cambio a pestaña: {index}")
         
@@ -817,6 +825,8 @@ class MainPOSWindow(QMainWindow):
             # Crear y mostrar diálogo simple de escaneo
             dialogo = ConfirmarPagoEfectivoDialog(
                 self.supabase_service,
+                pg_manager=self.pg_manager,
+                user_data=self.user_data,
                 parent=self
             )
             

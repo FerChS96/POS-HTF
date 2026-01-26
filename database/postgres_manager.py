@@ -8,7 +8,7 @@ ACTUALIZADO: Usa Supabase como backend único
 import logging
 import bcrypt
 import os
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, List, Optional, Any
 from decimal import Decimal
 import sys
@@ -744,6 +744,186 @@ class PostgresManager:
         except Exception as e:
             logging.error(f"Error creando venta: {e}")
             raise
+
+    def get_turno_abierto_id(self, id_usuario: int) -> Optional[int]:
+        """Obtener el ID del turno abierto del usuario (si existe)."""
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            response = (
+                self.client.table('turnos_caja')
+                .select('id_turno')
+                .eq('id_usuario', id_usuario)
+                .eq('cerrado', False)
+                .order('fecha_apertura', desc=True)
+                .limit(1)
+                .execute()
+            )
+
+            if response.data and len(response.data) > 0:
+                return response.data[0].get('id_turno')
+            return None
+        except Exception as e:
+            logging.error(f"Error obteniendo turno abierto para usuario {id_usuario}: {e}")
+            return None
+
+    def get_ventas_digitales_pendientes_efectivo_hoy(self, id_venta_digital: int) -> List[int]:
+        """Obtener IDs de ventas_digitales pendientes (efectivo) del mismo miembro creadas hoy.
+
+        Replica la lógica de la Edge Function `confirm-cash-payment` para saber qué se activará,
+        y usarlo para contabilizar en el POS sin duplicar.
+        """
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            venta_resp = (
+                self.client.table('ventas_digitales')
+                .select('id_miembro, estado, metodo_pago, fecha_compra')
+                .eq('id_venta_digital', id_venta_digital)
+                .limit(1)
+                .execute()
+            )
+
+            if not venta_resp.data:
+                return []
+
+            venta = venta_resp.data[0]
+            member_id = venta.get('id_miembro')
+            if not member_id:
+                return []
+
+            hoy_str = date.today().isoformat()
+            response = (
+                self.client.table('ventas_digitales')
+                .select('id_venta_digital')
+                .eq('id_miembro', member_id)
+                .eq('estado', 'pendiente_pago')
+                .eq('metodo_pago', 'efectivo')
+                .gte('fecha_compra', f"{hoy_str}T00:00:00")
+                .lt('fecha_compra', f"{hoy_str}T23:59:59")
+                .execute()
+            )
+
+            ids = [row.get('id_venta_digital') for row in (response.data or []) if row.get('id_venta_digital')]
+            return ids
+        except Exception as e:
+            logging.error(f"Error obteniendo ventas digitales pendientes del día: {e}")
+            return []
+
+    def contabilizar_pago_efectivo_digital_en_pos(
+        self,
+        ids_ventas_digitales: List[int],
+        id_usuario: int,
+        id_turno: int,
+    ) -> Optional[int]:
+        """Registrar una venta contable en `ventas` + `detalles_venta` por confirmación de efectivo.
+
+        Es idempotente usando `ventas.referencia_pago` con un valor determinístico basado en
+        los IDs de `ventas_digitales` confirmados.
+        """
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            ids = sorted({int(v) for v in (ids_ventas_digitales or []) if v})
+            if not ids:
+                return None
+
+            referencia_pago = f"CASHCONF:{','.join(map(str, ids))}"
+
+            # Idempotencia: si ya existe la venta contable, no duplicar
+            existing = (
+                self.client.table('ventas')
+                .select('id_venta')
+                .eq('referencia_pago', referencia_pago)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                return existing.data[0].get('id_venta')
+
+            ventas_resp = (
+                self.client.table('ventas_digitales')
+                .select('id_venta_digital, id_miembro, id_producto_digital, monto')
+                .in_('id_venta_digital', ids)
+                .execute()
+            )
+            ventas_digitales = ventas_resp.data or []
+            if not ventas_digitales:
+                return None
+
+            member_ids = {v.get('id_miembro') for v in ventas_digitales if v.get('id_miembro')}
+            if len(member_ids) != 1:
+                logging.error(f"No se puede contabilizar: múltiples miembros en ventas_digitales {ids}")
+                return None
+
+            id_miembro = next(iter(member_ids))
+            total = sum(float(v.get('monto') or 0) for v in ventas_digitales)
+
+            venta_insert = {
+                'id_usuario': id_usuario,
+                'id_miembro': id_miembro,
+                'id_turno': id_turno,
+                'fecha': datetime.now().isoformat(),
+                'subtotal': float(total),
+                'descuento': 0.0,
+                'impuestos': 0.0,
+                'total': float(total),
+                'metodo_pago': 'efectivo',
+                'tipo_venta': 'membresia',
+                'estado': 'completada',
+                'referencia_pago': referencia_pago,
+                'notas': f"Pago en efectivo confirmado (app). Ventas digitales: {referencia_pago}",
+            }
+
+            venta_response = self.client.table('ventas').insert(venta_insert).execute()
+            if not venta_response.data:
+                logging.error("No se pudo insertar la venta contable")
+                return None
+
+            id_venta = venta_response.data[0].get('id_venta')
+            if not id_venta:
+                return None
+
+            producto_ids = sorted({v.get('id_producto_digital') for v in ventas_digitales if v.get('id_producto_digital')})
+            productos_map: Dict[int, Dict[str, Any]] = {}
+            if producto_ids:
+                productos_resp = (
+                    self.client.table('ca_productos_digitales')
+                    .select('id_producto_digital, codigo_interno, nombre, descripcion')
+                    .in_('id_producto_digital', producto_ids)
+                    .execute()
+                )
+                for p in (productos_resp.data or []):
+                    if p.get('id_producto_digital') is not None:
+                        productos_map[int(p['id_producto_digital'])] = p
+
+            for v in ventas_digitales:
+                pid = v.get('id_producto_digital')
+                producto = productos_map.get(int(pid)) if pid is not None else None
+                monto = float(v.get('monto') or 0)
+
+                detalle = {
+                    'id_venta': id_venta,
+                    'codigo_interno': (producto or {}).get('codigo_interno') or f"DIGITAL-{pid}",
+                    'tipo_producto': 'digital',
+                    'cantidad': 1,
+                    'precio_unitario': monto,
+                    'subtotal_linea': monto,
+                    'descuento_linea': 0,
+                    'nombre_producto': (producto or {}).get('nombre') or 'Producto digital',
+                    'descripcion_producto': (producto or {}).get('descripcion'),
+                }
+
+                self.client.table('detalles_venta').insert(detalle).execute()
+
+            logging.info(f"✅ Pago efectivo contabilizado en POS. Venta={id_venta}, Ref={referencia_pago}")
+            return id_venta
+        except Exception as e:
+            logging.error(f"Error contabilizando pago efectivo digital en POS: {e}")
+            return None
     
     # ========== MIEMBROS Y ACCESO ==========
     

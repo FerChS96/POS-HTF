@@ -23,9 +23,11 @@ from ui.components import (
 class ConfirmarPagoEfectivoDialog(QDialog):
     """Diálogo para confirmar pago en efectivo escaneando código de pago"""
     
-    def __init__(self, supabase_service, parent=None):
+    def __init__(self, supabase_service, pg_manager=None, user_data=None, parent=None):
         super().__init__(parent)
         self.supabase_service = supabase_service
+        self.pg_manager = pg_manager
+        self.user_data = user_data or {}
         self.setWindowTitle("Confirmar Pago en Efectivo")
         self.setMinimumWidth(500)
         self.setMinimumHeight(280)
@@ -201,6 +203,12 @@ class ConfirmarPagoEfectivoDialog(QDialog):
     def _llamar_edge_function(self, id_venta_digital: int):
         """Llamar a la Edge Function para confirmar el pago"""
         try:
+            ids_para_contabilizar = []
+            if self.pg_manager:
+                ids_para_contabilizar = self.pg_manager.get_ventas_digitales_pendientes_efectivo_hoy(int(id_venta_digital))
+            if not ids_para_contabilizar:
+                ids_para_contabilizar = [int(id_venta_digital)]
+
             response = self.supabase_service.client.functions.invoke(
                 'confirm-cash-payment',
                 invoke_options={
@@ -241,6 +249,19 @@ class ConfirmarPagoEfectivoDialog(QDialog):
                     f"Ventas activadas: {ventas_activadas}, "
                     f"Asignaciones: {asignaciones}"
                 )
+
+                # Contabilizar en POS (si tenemos contexto)
+                venta_contable_id = None
+                if self.pg_manager and self.user_data.get('id_usuario'):
+                    turno_id = self.pg_manager.get_turno_abierto_id(self.user_data.get('id_usuario'))
+                    if turno_id:
+                        venta_contable_id = self.pg_manager.contabilizar_pago_efectivo_digital_en_pos(
+                            ids_para_contabilizar,
+                            self.user_data.get('id_usuario'),
+                            turno_id,
+                        )
+                    else:
+                        logging.warning("No hay turno abierto: pago confirmado pero no contabilizado en POS")
                 
                 # Actualizar notificación después de confirmar el pago
                 self._actualizar_notificacion(id_venta_digital)
@@ -251,6 +272,7 @@ class ConfirmarPagoEfectivoDialog(QDialog):
                     f"{mensaje}\n\n"
                     f"Ventas activadas: {ventas_activadas}\n"
                     f"Asignaciones: {asignaciones}"
+                    + (f"\n\nVenta POS: {venta_contable_id}" if venta_contable_id else "")
                 )
                 
                 self.accept()
