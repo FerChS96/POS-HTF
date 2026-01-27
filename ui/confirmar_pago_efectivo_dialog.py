@@ -170,7 +170,7 @@ class ConfirmarPagoEfectivoDialog(QDialog):
             
             # 1. Buscar el código en notificaciones_pos (columna: codigo_pago_generado)
             response = self.supabase_service.client.table('notificaciones_pos').select(
-                'id_venta_digital'
+                'id_notificacion, id_venta_digital'
             ).eq('codigo_pago_generado', codigo_normalizado).limit(1).execute()
             
             if not response.data or len(response.data) == 0:
@@ -185,10 +185,11 @@ class ConfirmarPagoEfectivoDialog(QDialog):
                 return
             
             id_venta_digital = response.data[0]['id_venta_digital']
-            logging.info(f"Código encontrado - ID venta: {id_venta_digital}")
+            id_notificacion = response.data[0].get('id_notificacion')
+            logging.info(f"Código encontrado - ID venta: {id_venta_digital}, Notificación: {id_notificacion}")
             
             # 2. Llamar Edge Function con el id_venta_digital
-            self._llamar_edge_function(id_venta_digital)
+            self._llamar_edge_function(id_venta_digital, id_notificacion)
         
         except Exception as e:
             logging.error(f"[ERROR] Buscando código de pago: {e}", exc_info=True)
@@ -200,15 +201,9 @@ class ConfirmarPagoEfectivoDialog(QDialog):
             self.scan_input.clear()
             self.scan_input.setFocus()
     
-    def _llamar_edge_function(self, id_venta_digital: int):
+    def _llamar_edge_function(self, id_venta_digital: int, id_notificacion: int = None):
         """Llamar a la Edge Function para confirmar el pago"""
         try:
-            ids_para_contabilizar = []
-            if self.pg_manager:
-                ids_para_contabilizar = self.pg_manager.get_ventas_digitales_pendientes_efectivo_hoy(int(id_venta_digital))
-            if not ids_para_contabilizar:
-                ids_para_contabilizar = [int(id_venta_digital)]
-
             response = self.supabase_service.client.functions.invoke(
                 'confirm-cash-payment',
                 invoke_options={
@@ -255,11 +250,14 @@ class ConfirmarPagoEfectivoDialog(QDialog):
                 if self.pg_manager and self.user_data.get('id_usuario'):
                     turno_id = self.pg_manager.get_turno_abierto_id(self.user_data.get('id_usuario'))
                     if turno_id:
-                        venta_contable_id = self.pg_manager.contabilizar_pago_efectivo_digital_en_pos(
-                            ids_para_contabilizar,
-                            self.user_data.get('id_usuario'),
-                            turno_id,
-                        )
+                        if id_notificacion:
+                            venta_contable_id = self.pg_manager.contabilizar_pago_efectivo_notificacion_en_pos(
+                                int(id_notificacion),
+                                self.user_data.get('id_usuario'),
+                                turno_id,
+                            )
+                        else:
+                            logging.warning("No se pudo contabilizar: no se obtuvo id_notificacion")
                     else:
                         logging.warning("No hay turno abierto: pago confirmado pero no contabilizado en POS")
                 

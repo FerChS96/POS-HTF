@@ -924,6 +924,117 @@ class PostgresManager:
         except Exception as e:
             logging.error(f"Error contabilizando pago efectivo digital en POS: {e}")
             return None
+
+    def contabilizar_pago_efectivo_notificacion_en_pos(
+        self,
+        id_notificacion: int,
+        id_usuario: int,
+        id_turno: int,
+    ) -> Optional[int]:
+        """Registrar una venta contable en `ventas` + `detalles_venta` usando `notificaciones_pos`.
+
+        Motivación: la app que genera la notificación puede no tener desglose ni ventas_digitales
+        consistentes. Para el corte diario, se toma `monto_pendiente` como total y se crea un
+        único detalle genérico.
+
+        Es idempotente por `ventas.referencia_pago = CASHNOTIF:<id_notificacion>`.
+        """
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            if not id_notificacion:
+                return None
+
+            referencia_pago = f"CASHNOTIF:{int(id_notificacion)}"
+
+            existing = (
+                self.client.table('ventas')
+                .select('id_venta')
+                .eq('referencia_pago', referencia_pago)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                return existing.data[0].get('id_venta')
+
+            notif_resp = (
+                self.client.table('notificaciones_pos')
+                .select('id_notificacion, id_miembro, id_venta_digital, monto_pendiente, codigo_pago_generado, tipo_notificacion, asunto')
+                .eq('id_notificacion', int(id_notificacion))
+                .limit(1)
+                .execute()
+            )
+
+            if not notif_resp.data:
+                logging.error(f"No se encontró notificación {id_notificacion} para contabilizar")
+                return None
+
+            notif = notif_resp.data[0]
+            id_miembro = notif.get('id_miembro')
+            monto = float(notif.get('monto_pendiente') or 0)
+
+            if not id_miembro:
+                logging.error(f"Notificación {id_notificacion} sin id_miembro; no se puede contabilizar")
+                return None
+            if monto <= 0:
+                logging.error(f"Notificación {id_notificacion} con monto_pendiente inválido: {notif.get('monto_pendiente')}")
+                return None
+
+            now_iso = datetime.now().isoformat()
+            codigo = (notif.get('codigo_pago_generado') or '').strip() or None
+            id_venta_digital = notif.get('id_venta_digital')
+
+            venta_insert = {
+                'id_usuario': id_usuario,
+                'id_miembro': id_miembro,
+                'id_turno': id_turno,
+                'fecha': now_iso,
+                'subtotal': float(monto),
+                'descuento': 0.0,
+                'impuestos': 0.0,
+                'total': float(monto),
+                'metodo_pago': 'efectivo',
+                # Mantener un valor genérico ya usado por el POS
+                'tipo_venta': 'producto',
+                'estado': 'completada',
+                'referencia_pago': referencia_pago,
+                'notas': (
+                    f"Pago en efectivo confirmado (app). Notificación={id_notificacion}"
+                    + (f", VentaDigital={id_venta_digital}" if id_venta_digital else "")
+                    + (f", Código={codigo}" if codigo else "")
+                ),
+            }
+
+            venta_response = self.client.table('ventas').insert(venta_insert).execute()
+            if not venta_response.data:
+                logging.error("No se pudo insertar la venta contable (notificación)")
+                return None
+
+            id_venta = venta_response.data[0].get('id_venta')
+            if not id_venta:
+                return None
+
+            detalle = {
+                'id_venta': id_venta,
+                'codigo_interno': 'PAGO-EFECTIVO-APP',
+                'tipo_producto': 'digital',
+                'cantidad': 1,
+                'precio_unitario': float(monto),
+                'subtotal_linea': float(monto),
+                'descuento_linea': 0,
+                'nombre_producto': 'Pago en efectivo (app)',
+                'descripcion_producto': (
+                    'Registro contable sin desglose; total tomado de notificaciones_pos.monto_pendiente.'
+                ),
+            }
+
+            self.client.table('detalles_venta').insert(detalle).execute()
+            logging.info(f"✅ Pago efectivo contabilizado desde notificación. Venta={id_venta}, Ref={referencia_pago}")
+            return id_venta
+        except Exception as e:
+            logging.error(f"Error contabilizando pago efectivo desde notificación en POS: {e}")
+            return None
     
     # ========== MIEMBROS Y ACCESO ==========
     

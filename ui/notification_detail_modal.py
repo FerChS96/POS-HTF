@@ -459,10 +459,6 @@ class NotificationDetailModal(QDialog):
                     show_error_dialog(self, "Error", "La notificación no tiene id_venta_digital. No se puede confirmar el pago.")
                     return
 
-                ids_para_contabilizar = self.pg_manager.get_ventas_digitales_pendientes_efectivo_hoy(int(id_venta_digital))
-                if not ids_para_contabilizar:
-                    ids_para_contabilizar = [int(id_venta_digital)]
-
                 resultado = self.supabase_service.confirmar_pago_efectivo_edge(int(id_venta_digital))
                 
                 if resultado.get('success'):
@@ -472,8 +468,8 @@ class NotificationDetailModal(QDialog):
                     turno_id = self.pg_manager.get_turno_abierto_id(self.user_data.get('id_usuario'))
                     venta_contable_id = None
                     if turno_id:
-                        venta_contable_id = self.pg_manager.contabilizar_pago_efectivo_digital_en_pos(
-                            ids_para_contabilizar,
+                        venta_contable_id = self.pg_manager.contabilizar_pago_efectivo_notificacion_en_pos(
+                            int(id_notificacion),
                             self.user_data.get('id_usuario'),
                             turno_id,
                         )
@@ -509,13 +505,11 @@ class NotificationDetailModal(QDialog):
             if success:
                 # Intentar contabilizar también en modo local
                 try:
-                    id_venta_digital = notif_completa.get('id_venta_digital')
-                    if id_venta_digital and self.user_data.get('id_usuario'):
+                    if self.user_data.get('id_usuario'):
                         turno_id = self.pg_manager.get_turno_abierto_id(self.user_data.get('id_usuario'))
                         if turno_id:
-                            ids_para_contabilizar = self.pg_manager.get_ventas_digitales_pendientes_efectivo_hoy(int(id_venta_digital)) or [int(id_venta_digital)]
-                            self.pg_manager.contabilizar_pago_efectivo_digital_en_pos(
-                                ids_para_contabilizar,
+                            self.pg_manager.contabilizar_pago_efectivo_notificacion_en_pos(
+                                int(id_notificacion),
                                 self.user_data.get('id_usuario'),
                                 turno_id,
                             )
