@@ -1,6 +1,7 @@
 .env
 .env.example
 create_test_user_recepcionista.py
+create_users_alexa_balbina.py
 
 # PyInstaller
 build/

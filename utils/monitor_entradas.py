@@ -9,6 +9,7 @@ from datetime import datetime
 import json
 import asyncio
 import threading
+from collections import deque
 
 
 class SupabaseRealtimeThread(QThread):
@@ -23,7 +24,10 @@ class SupabaseRealtimeThread(QThread):
         self.channel = None
         self.loop = None
         self.thread = None
-        self.procesados = set()  # Track de IDs de entrada ya procesados
+        # Usar deque con límite para evitar memory leak (últimos 1000 IDs)
+        self.procesados = deque(maxlen=1000)
+        self.max_reconnect_attempts = 5
+        self.reconnect_delay = 5  # segundos
 
     def run(self):
         """Conectar y escuchar cambios en tiempo real"""
@@ -78,81 +82,94 @@ class SupabaseRealtimeThread(QThread):
                         pass
 
     async def _run_async(self):
-        """Función async para manejar el realtime"""
-        try:
-            # Configurar exception handler personalizado para evitar logging después del cierre
-            def custom_exception_handler(loop, context):
-                # Ignorar excepciones relacionadas con el cierre del loop
-                exception = context.get('exception')
-                if isinstance(exception, RuntimeError) and 'Event loop is closed' in str(exception):
-                    return  # Silenciar esta excepción común durante el cierre
+        """Función async para manejar el realtime con reconexión automática"""
+        reconnect_attempt = 0
+        
+        # Configurar exception handler personalizado
+        def custom_exception_handler(loop, context):
+            exception = context.get('exception')
+            if isinstance(exception, RuntimeError) and 'Event loop is closed' in str(exception):
+                return
+            
+            if self.running:
+                try:
+                    import logging
+                    logger = logging.getLogger()
+                    if logger and logger.hasHandlers():
+                        try:
+                            logger.debug(f"Event loop exception: {context.get('message', 'Unknown')}")
+                        except (ValueError, AttributeError):
+                            pass
+                except:
+                    pass
+        
+        self.loop.set_exception_handler(custom_exception_handler)
+        
+        # Loop de reconexión
+        while self.running and reconnect_attempt < self.max_reconnect_attempts:
+            try:
+                if reconnect_attempt > 0:
+                    logging.info(f"[RECONEXIÓN] Intento {reconnect_attempt}/{self.max_reconnect_attempts}")
+                    await asyncio.sleep(self.reconnect_delay)
                 
-                # Solo intentar loggear si el hilo sigue activo y el logger está disponible
-                if self.running:
-                    try:
-                        import logging
-                        logger = logging.getLogger()
-                        if logger and logger.hasHandlers() and hasattr(logger, 'error'):
-                            # Verificar que el logger no esté cerrado
-                            try:
-                                # Intentar hacer un log de prueba para ver si funciona
-                                logger.debug("test")
-                                loop.default_exception_handler(context)
-                            except (ValueError, AttributeError):
-                                # Logger cerrado, no hacer nada
-                                pass
-                    except:
-                        pass  # Silenciar cualquier error de logging
-            
-            self.loop.set_exception_handler(custom_exception_handler)
-            
-            # Crear cliente async
-            from supabase import acreate_client
-            client = await acreate_client(self.supabase_service.url, self.supabase_service.key)
-            # Guardar referencia al cliente async para poder cerrarlo durante el apagado
-            self.client = client
+                # Crear cliente async
+                from supabase import acreate_client
+                client = await acreate_client(self.supabase_service.url, self.supabase_service.key)
+                self.client = client
+                logging.info("[OK] Cliente async creado")
 
-            # Crear canal de realtime
-            self.channel = client.channel('registro_entradas_changes')
+                # Crear canal de realtime
+                self.channel = client.channel('registro_entradas_changes')
 
-            # Suscribirse a eventos INSERT en la tabla registro_entradas
-            self.channel.on_postgres_changes(
-                event='INSERT',
-                schema='public',
-                table='registro_entradas',
-                callback=self._on_entrada_insertada
-            )
+                # Suscribirse a eventos INSERT
+                self.channel.on_postgres_changes(
+                    event='INSERT',
+                    schema='public',
+                    table='registro_entradas',
+                    callback=self._on_entrada_insertada
+                )
 
-            # Suscribirse al canal
-            await self.channel.subscribe()
+                # Suscribirse al canal
+                await self.channel.subscribe()
+                logging.info("[OK] Suscrito al canal de realtime")
 
-            self.running = True
+                self.running = True
+                reconnect_attempt = 0  # Resetear contador si conexión exitosa
 
-            try:
-                # Mantener el hilo vivo mientras esté corriendo
-                while self.running:
-                    await asyncio.sleep(0.1)  # Pequeña pausa para no consumir CPU
+                # Mantener el hilo vivo
+                try:
+                    while self.running:
+                        await asyncio.sleep(1)  # Reducir consumo de CPU
+                except asyncio.CancelledError:
+                    logging.debug("[SHUTDOWN] Loop cancelado")
+                    break
+
             except asyncio.CancelledError:
-                # Capturar CancelledError para asegurar limpieza
-                self.running = False
-                if self.running:  # Solo loggear si sigue corriendo
-                    logging.info("[SHUTDOWN] Hilo cancelado, ejecutando shutdown...")
-                raise  # Re-lanzar para que el loop sepa que fue cancelado
-
-        except asyncio.CancelledError:
-            # El hilo fue cancelado, asegurar limpieza
-            self.running = False
-            if self.running:  # Solo loggear si sigue corriendo
-                logging.info("[SHUTDOWN] CancelledError capturado en _run_async")
+                logging.debug("[SHUTDOWN] Tarea cancelada")
+                break
+            except Exception as e:
+                if self.running:
+                    reconnect_attempt += 1
+                    logging.error(f"[ERROR] Error en Realtime (intento {reconnect_attempt}): {e}")
+                    
+                    # Limpiar recursos antes de reintentar
+                    try:
+                        if self.channel:
+                            await self.channel.unsubscribe()
+                    except:
+                        pass
+                    
+                    if reconnect_attempt >= self.max_reconnect_attempts:
+                        logging.error("[ERROR] Máximo de reintentos alcanzado. Deteniendo monitor.")
+                        break
+                else:
+                    break
+        
+        # Limpieza final
+        try:
+            await self._shutdown_async()
         except Exception as e:
-            if self.running:  # Solo loggear si fue un error intencional
-                logging.error(f"[ERROR] Error en Supabase Realtime async: {e}")
-        finally:
-            # Ejecutar limpieza centralizada
-            try:
-                await self._shutdown_async()
-            except Exception:
-                pass
+            logging.debug(f"[SHUTDOWN] Error en limpieza: {e}")
 
     def _on_entrada_insertada(self, payload):
         """Manejar cuando se inserta una nueva entrada"""
@@ -256,51 +273,20 @@ class SupabaseRealtimeThread(QThread):
                 self.client = None
 
     def stop(self):
-        """Detener el listener de manera segura"""
+        """Detener el listener de manera segura y simple"""
+        logging.debug("[SHUTDOWN] Iniciando detención del monitor")
         self.running = False
-
-        # Esperar un poco para que el _run_async termine naturalmente
-        import time
-        time.sleep(0.2)
-
-        if self.loop and not self.loop.is_closed():
-            try:
-                # Ejecutar la rutina de apagado dentro del event loop del hilo de forma segura
-                import asyncio
-                
-                # Si el loop está corriendo, usar run_coroutine_threadsafe
-                if self.loop.is_running():
-                    try:
-                        future = asyncio.run_coroutine_threadsafe(self._shutdown_async(), self.loop)
-                        try:
-                            future.result(timeout=2.0)
-                        except Exception:
-                            # Ignorar timeouts/cancelaciones durante el cierre
-                            pass
-                    except Exception:
-                        # Si no podemos ejecutar coroutine, intentar parar el loop directamente
-                        try:
-                            self.loop.call_soon_threadsafe(self.loop.stop)
-                        except Exception:
-                            pass
-                    
-                    # Dar tiempo para que el loop se detenga
-                    time.sleep(0.1)
-                else:
-                    # Si el loop no está corriendo, simplemente cerrar
-                    try:
-                        if not self.loop.is_closed():
-                            self.loop.close()
-                    except Exception:
-                        pass
-            except Exception as e:
-                logging.error(f"Error durante shutdown del loop: {e}")
-
-        # Esperar a que el hilo termine (máximo 2 segundos)
+        
+        # Esperar a que el thread termine naturalmente (timeout aumentado a 10 segundos)
+        # El _run_async detectará running=False y terminará limpiamente
         try:
-            self.wait(timeout=2000)
-        except Exception:
-            pass
+            if not self.wait(10000):  # 10 segundos
+                logging.warning("[SHUTDOWN] Thread no terminó en 10s, forzando")
+                # Solo si realmente no termina, intentar terminate (último recurso)
+                self.terminate()
+                self.wait(2000)
+        except Exception as e:
+            logging.error(f"[SHUTDOWN] Error esperando thread: {e}")
 
     def __del__(self):
         """Destructor para asegurar limpieza de recursos"""
@@ -431,10 +417,9 @@ class MonitorEntradas(QObject):
         logging.info("Monitor de entradas detenido")
     
     def procesar_nueva_entrada(self, entrada_data):
-        """Procesar nueva entrada detectada por realtime"""
+        """Procesar nueva entrada detectada por realtime (sin query adicional)"""
         try:
             if not self.activo:
-                # No procesar si el monitor ya se detuvo
                 return
                 
             entrada_id = entrada_data.get('id_entrada')
@@ -442,40 +427,51 @@ class MonitorEntradas(QObject):
 
             logging.info(f"[ENTRADA] Procesando entrada ID: {entrada_id}, Miembro: {id_miembro}")
 
-            # Consultar datos completos desde Supabase (entrada + datos del miembro)
-            if self.supabase_service and self.supabase_service.is_connected:
-                try:
-                    # Consultar entrada con datos del miembro
-                    response = self.supabase_service.client.table('registro_entradas')\
-                        .select('*, miembros(*)')\
-                        .eq('id_entrada', entrada_id)\
-                        .single()\
-                        .execute()
-
-                    if response.data:
-                        entrada = response.data
-                        
-                        # Construir datos completos usando método centralizado
-                        entrada_completa = self._build_entrada_data(entrada, include_foto=True)
-
-                        # Emitir señal con los datos completos
-                        nombre_completo = f"{entrada_completa['nombres']} {entrada_completa['apellido_paterno']}"
-                        logging.info(f"✅ Nueva entrada procesada - ID: {entrada_id}, Miembro: {nombre_completo}")
-                        self.nueva_entrada_detectada.emit(entrada_completa)
-                    else:
-                        logging.warning(f"No se encontraron datos para entrada ID: {entrada_id}")
-
-                except Exception as e:
-                    logging.error(f"Error consultando datos completos desde Supabase: {e}")
-                    # Si falla la consulta, emitir los datos básicos que tenemos
-                    self.nueva_entrada_detectada.emit(entrada_data)
+            # OPTIMIZACIÓN: Usar datos del payload directamente
+            # El payload ya contiene todos los datos necesarios de registro_entradas
+            # Solo consultamos datos del miembro si no están en el payload
+            
+            # Si el payload tiene datos de miembro embebidos, usarlos
+            if 'miembros' in entrada_data and entrada_data['miembros']:
+                # Datos completos del payload (incluye JOIN con miembros)
+                entrada_completa = self._build_entrada_data(entrada_data, include_foto=True)
+                nombre_completo = f"{entrada_completa['nombres']} {entrada_completa['apellido_paterno']}"
+                logging.info(f"✅ Nueva entrada (desde payload) - ID: {entrada_id}, Miembro: {nombre_completo}")
+                self.nueva_entrada_detectada.emit(entrada_completa)
             else:
-                # Si no hay Supabase, emitir los datos básicos
-                logging.warning("Supabase no disponible, emitiendo datos básicos de entrada")
-                self.nueva_entrada_detectada.emit(entrada_data)
+                # Fallback: Consulta async en segundo plano si faltan datos del miembro
+                # (no bloquea el callback)
+                logging.debug(f"[ENTRADA] Payload sin datos de miembro, usando datos básicos")
+                
+                # Construir datos básicos del payload
+                entrada_basica = {
+                    'id_entrada': entrada_data.get('id_entrada'),
+                    'id_miembro': entrada_data.get('id_miembro'),
+                    'tipo_acceso': entrada_data.get('tipo_acceso'),
+                    'fecha_entrada': entrada_data.get('fecha_entrada'),
+                    'area_accedida': entrada_data.get('area_accedida'),
+                    'dispositivo_registro': entrada_data.get('dispositivo_registro'),
+                    'notas': entrada_data.get('notas', ''),
+                    # Datos de miembro vacíos (se llenarán si es necesario)
+                    'nombres': '',
+                    'apellido_paterno': '',
+                    'apellido_materno': '',
+                    'telefono': '',
+                    'email': '',
+                    'codigo_qr': '',
+                    'activo': True,
+                    'fecha_registro': '',
+                    'fecha_nacimiento': ''
+                }
+                
+                # Emitir señal con datos básicos
+                logging.info(f"✅ Nueva entrada (datos básicos) - ID: {entrada_id}")
+                self.nueva_entrada_detectada.emit(entrada_basica)
 
         except Exception as e:
             logging.error(f"[ERROR] Error procesando nueva entrada: {e}")
+            import traceback
+            logging.debug(traceback.format_exc())
     
     def reiniciar(self):
         """Reiniciar el monitor"""

@@ -135,56 +135,56 @@ class EditableCatalogGrid(QWidget):
         tab_varios_layout.addWidget(self.tabla_varios)
         self.tab_widget.addTab(self.tab_varios, "Productos Varios")
         
-        # Tab Suplementos
-        self.tab_suplementos = QWidget()
-        tab_suplementos_layout = QVBoxLayout(self.tab_suplementos)
-        tab_suplementos_layout.setContentsMargins(10, 10, 10, 10)
-        tab_suplementos_layout.setSpacing(10)
-        
-        # Panel de búsqueda para suplementos
-        search_suplementos_panel = ContentPanel()
-        search_suplementos_layout = QHBoxLayout(search_suplementos_panel)
-        search_suplementos_layout.setSpacing(10)
-        
-        search_suplementos_layout.addWidget(StyledLabel("Buscar:", bold=True))
-        self.search_suplementos = SearchBar("Buscar por código, nombre o marca...")
-        self.search_suplementos.connect_search(self.filtrar_suplementos)
-        search_suplementos_layout.addWidget(self.search_suplementos, stretch=1)
-        
-        search_suplementos_layout.addWidget(StyledLabel("Tipo:", bold=True))
-        self.combo_tipo_suplemento = QComboBox()
-        self.combo_tipo_suplemento.setMinimumWidth(150)
-        self.combo_tipo_suplemento.addItem("Todos")
-        self.combo_tipo_suplemento.currentTextChanged.connect(self.filtrar_suplementos)
-        self.combo_tipo_suplemento.setStyleSheet(f"""
-            QComboBox {{
-                padding: 6px;
-                border: 2px solid {WindowsPhoneTheme.BORDER_COLOR};
-                border-radius: 4px;
-                background-color: white;
-            }}
-        """)
-        search_suplementos_layout.addWidget(self.combo_tipo_suplemento)
-        
-        search_suplementos_layout.addWidget(StyledLabel("Estado:", bold=True))
-        self.combo_activo_suplementos = QComboBox()
-        self.combo_activo_suplementos.addItems(["Todos", "Activos", "Inactivos"])
-        self.combo_activo_suplementos.currentTextChanged.connect(self.filtrar_suplementos)
-        self.combo_activo_suplementos.setStyleSheet(f"""
-            QComboBox {{
-                padding: 6px;
-                border: 2px solid {WindowsPhoneTheme.BORDER_COLOR};
-                border-radius: 4px;
-                background-color: white;
-            }}
-        """)
-        search_suplementos_layout.addWidget(self.combo_activo_suplementos)
-        
-        tab_suplementos_layout.addWidget(search_suplementos_panel)
-        
-        self.tabla_suplementos = self.crear_tabla_suplementos()
-        tab_suplementos_layout.addWidget(self.tabla_suplementos)
-        self.tab_widget.addTab(self.tab_suplementos, "Suplementos")
+        # # Tab Suplementos - DESHABILITADO
+        # self.tab_suplementos = QWidget()
+        # tab_suplementos_layout = QVBoxLayout(self.tab_suplementos)
+        # tab_suplementos_layout.setContentsMargins(10, 10, 10, 10)
+        # tab_suplementos_layout.setSpacing(10)
+        # 
+        # # Panel de búsqueda para suplementos
+        # search_suplementos_panel = ContentPanel()
+        # search_suplementos_layout = QHBoxLayout(search_suplementos_panel)
+        # search_suplementos_layout.setSpacing(10)
+        # 
+        # search_suplementos_layout.addWidget(StyledLabel("Buscar:", bold=True))
+        # self.search_suplementos = SearchBar("Buscar por código, nombre o marca...")
+        # self.search_suplementos.connect_search(self.filtrar_suplementos)
+        # search_suplementos_layout.addWidget(self.search_suplementos, stretch=1)
+        # 
+        # search_suplementos_layout.addWidget(StyledLabel("Tipo:", bold=True))
+        # self.combo_tipo_suplemento = QComboBox()
+        # self.combo_tipo_suplemento.setMinimumWidth(150)
+        # self.combo_tipo_suplemento.addItem("Todos")
+        # self.combo_tipo_suplemento.currentTextChanged.connect(self.filtrar_suplementos)
+        # self.combo_tipo_suplemento.setStyleSheet(f"""
+        #     QComboBox {{
+        #         padding: 6px;
+        #         border: 2px solid {WindowsPhoneTheme.BORDER_COLOR};
+        #         border-radius: 4px;
+        #         background-color: white;
+        #     }}
+        # """)
+        # search_suplementos_layout.addWidget(self.combo_tipo_suplemento)
+        # 
+        # search_suplementos_layout.addWidget(StyledLabel("Estado:", bold=True))
+        # self.combo_activo_suplementos = QComboBox()
+        # self.combo_activo_suplementos.addItems(["Todos", "Activos", "Inactivos"])
+        # self.combo_activo_suplementos.currentTextChanged.connect(self.filtrar_suplementos)
+        # self.combo_activo_suplementos.setStyleSheet(f"""
+        #     QComboBox {{
+        #         padding: 6px;
+        #         border: 2px solid {WindowsPhoneTheme.BORDER_COLOR};
+        #         border-radius: 4px;
+        #         background-color: white;
+        #     }}
+        # """)
+        # search_suplementos_layout.addWidget(self.combo_activo_suplementos)
+        # 
+        # tab_suplementos_layout.addWidget(search_suplementos_panel)
+        # 
+        # self.tabla_suplementos = self.crear_tabla_suplementos()
+        # tab_suplementos_layout.addWidget(self.tabla_suplementos)
+        # self.tab_widget.addTab(self.tab_suplementos, "Suplementos")
         
         # Panel con tabla
         table_panel = ContentPanel()
@@ -357,12 +357,12 @@ class EditableCatalogGrid(QWidget):
             
             # Poblar tablas
             self.poblar_tabla_productos_varios()
-            self.poblar_tabla_suplementos()
+            # self.poblar_tabla_suplementos()  # DESHABILITADO
             
             self.cambios_pendientes = {}
             self.actualizar_label_cambios()
             
-            logging.info(f"Catálogo cargado: {len(self.productos_varios)} productos varios, {len(self.suplementos)} suplementos")
+            logging.info(f"Catálogo cargado: {len(self.productos_varios)} productos varios")  # , {len(self.suplementos)} suplementos
             
         except Exception as e:
             logging.error(f"Error cargando catálogo: {e}")
@@ -382,17 +382,17 @@ class EditableCatalogGrid(QWidget):
         for cat in sorted(categorias):
             self.combo_categoria_varios.addItem(cat)
         
-        # Tipos únicos de suplementos
-        tipos = set()
-        for suplemento in self.suplementos:
-            tipo = suplemento.get('tipo')
-            if tipo:
-                tipos.add(tipo)
-        
-        self.combo_tipo_suplemento.clear()
-        self.combo_tipo_suplemento.addItem("Todos")
-        for tipo in sorted(tipos):
-            self.combo_tipo_suplemento.addItem(tipo)
+        # # Tipos únicos de suplementos - DESHABILITADO
+        # tipos = set()
+        # for suplemento in self.suplementos:
+        #     tipo = suplemento.get('tipo')
+        #     if tipo:
+        #         tipos.add(tipo)
+        # 
+        # self.combo_tipo_suplemento.clear()
+        # self.combo_tipo_suplemento.addItem("Todos")
+        # for tipo in sorted(tipos):
+        #     self.combo_tipo_suplemento.addItem(tipo)
     
     def poblar_tabla_productos_varios(self):
         """Poblar tabla de productos varios"""
@@ -504,7 +504,7 @@ class EditableCatalogGrid(QWidget):
     
     def _on_combo_changed(self, row, col, text):
         """Manejar cambio en un QComboBox de unidad"""
-        tabla = self.tabla_varios if self.tab_widget.currentIndex() == 0 else self.tabla_suplementos
+        tabla = self.tabla_varios  # if self.tab_widget.currentIndex() == 0 else self.tabla_suplementos
         codigo_item = tabla.item(row, 0)
         
         if codigo_item:
@@ -515,10 +515,12 @@ class EditableCatalogGrid(QWidget):
                 self.cambios_pendientes[codigo] = {}
             
             # Determinar el nombre del campo
-            if self.tab_widget.currentIndex() == 0:  # Productos varios
-                campos = ['codigo_interno', 'nombre', 'descripcion', 'precio_venta', 'categoria', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
-            else:  # Suplementos
-                campos = ['codigo_interno', 'nombre', 'marca', 'tipo', 'precio_venta', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
+            # Solo productos varios ahora
+            campos = ['codigo_interno', 'nombre', 'descripcion', 'precio_venta', 'categoria', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
+            # if self.tab_widget.currentIndex() == 0:  # Productos varios
+            #     campos = ['codigo_interno', 'nombre', 'descripcion', 'precio_venta', 'categoria', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
+            # else:  # Suplementos
+            #     campos = ['codigo_interno', 'nombre', 'marca', 'tipo', 'precio_venta', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
             
             if col < len(campos):
                 campo = campos[col]
@@ -540,7 +542,7 @@ class EditableCatalogGrid(QWidget):
     def on_item_changed(self, item):
         """Manejar cambio en un item de la tabla"""
         # Obtener código del producto
-        tabla = self.tabla_varios if self.tab_widget.currentIndex() == 0 else self.tabla_suplementos
+        tabla = self.tabla_varios  # if self.tab_widget.currentIndex() == 0 else self.tabla_suplementos
         row = item.row()
         codigo_item = tabla.item(row, 0)
         
@@ -549,10 +551,12 @@ class EditableCatalogGrid(QWidget):
             col = item.column()
             
             # Determinar el nombre del campo según la tabla
-            if self.tab_widget.currentIndex() == 0:  # Productos varios
-                campos = ['codigo_interno', 'nombre', 'descripcion', 'precio_venta', 'categoria', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
-            else:  # Suplementos
-                campos = ['codigo_interno', 'nombre', 'marca', 'tipo', 'precio_venta', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
+            # Solo productos varios ahora
+            campos = ['codigo_interno', 'nombre', 'descripcion', 'precio_venta', 'categoria', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
+            # if self.tab_widget.currentIndex() == 0:  # Productos varios
+            #     campos = ['codigo_interno', 'nombre', 'descripcion', 'precio_venta', 'categoria', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
+            # else:  # Suplementos
+            #     campos = ['codigo_interno', 'nombre', 'marca', 'tipo', 'precio_venta', 'cantidad_medida', 'unidad_medida', 'codigo_barras', 'activo']
             
             if col < len(campos):
                 campo = campos[col]

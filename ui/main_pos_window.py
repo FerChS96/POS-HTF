@@ -105,6 +105,18 @@ class MainPOSWindow(QMainWindow):
         
         # Iniciar monitor de entradas
         self.iniciar_monitor_entradas()
+
+    def _role_lower(self) -> str:
+        return (self.user_data.get('rol') or '').lower()
+
+    def _sales_disabled_for_role(self) -> bool:
+        return self._role_lower() in ('administrador', 'sistemas')
+
+    def _default_tab_index(self) -> int:
+        # Para administrador/sistemas arrancar en Admin (evitar ver Ventas)
+        if self._sales_disabled_for_role():
+            return 3
+        return 0
         
     def setup_ui(self):
         """Configurar interfaz principal"""
@@ -138,9 +150,14 @@ class MainPOSWindow(QMainWindow):
         
         # Barra de navegación inferior con pestañas
         self.create_bottom_nav(main_layout)
-        
-        # Mostrar la primera pestaña (Ventas)
-        self.stacked_widget.setCurrentIndex(0)
+
+        # Seleccionar pestaña inicial según rol
+        desired_index = self._default_tab_index()
+        available_indices = [getattr(btn, '_tab_index', None) for btn in getattr(self, 'tab_buttons', [])]
+        available_indices = [idx for idx in available_indices if isinstance(idx, int)]
+        if available_indices and desired_index not in available_indices:
+            desired_index = available_indices[0]
+        self.switch_tab(desired_index)
         
     def create_bottom_nav(self, parent_layout):
         """Crear barra de navegación inferior usando TabButton"""
@@ -153,7 +170,7 @@ class MainPOSWindow(QMainWindow):
         nav_layout.setSpacing(0)
         
         # Definir pestañas con iconos y colores
-        role = (self.user_data.get('rol') or '').lower()
+        role = self._role_lower()
         tabs = [
             {"name": "Ventas", "icon": "fa5s.shopping-cart", "color": WindowsPhoneTheme.TILE_RED, "index": 0},
             {"name": "Inventario", "icon": "fa5s.boxes", "color": WindowsPhoneTheme.TILE_GREEN, "index": 1},
@@ -165,6 +182,10 @@ class MainPOSWindow(QMainWindow):
         # UI-only control de acceso: recepcionista no ve Inventario/Admin
         if role == 'recepcionista':
             tabs = [t for t in tabs if t['name'] not in ('Inventario', 'Admin')]
+
+        # Administrador/Sistemas: ocultar Ventas
+        if self._sales_disabled_for_role():
+            tabs = [t for t in tabs if t['name'] != 'Ventas']
         
         # Crear botones usando componente TabButton
         self.tab_buttons = []
@@ -176,9 +197,7 @@ class MainPOSWindow(QMainWindow):
             nav_layout.addWidget(btn)
             self.tab_buttons.append(btn)
         
-        # Activar primera pestaña
-        if self.tab_buttons:
-            self.tab_buttons[0].setChecked(True)
+        # El check inicial lo define setup_ui() vía switch_tab
         
         parent_layout.addWidget(self.nav_bar)
         
@@ -312,7 +331,7 @@ class MainPOSWindow(QMainWindow):
         btn_historial = TileButton("Historial de Acceso", "fa5s.history", WindowsPhoneTheme.TILE_PURPLE)
         btn_historial.clicked.connect(self.abrir_historial_acceso)
         btn_lockers = TileButton("Asignar\nLockers", "mdi.locker", WindowsPhoneTheme.TILE_BLUE)
-        btn_lockers.clicked.connect(self.abrir_asignaciones_lockers_diarios)
+        btn_lockers.clicked.connect(self.abrir_asignaciones_lockers)  # Mensuales
         
         actions_grid.addWidget(btn_search, 0, 0)
         actions_grid.addWidget(btn_historial, 0, 1)
@@ -869,7 +888,6 @@ class MainPOSWindow(QMainWindow):
             logging.info(f"[DEBUG] Código original: {codigo_original} → Normalizado: {codigo_normalizado}")
             
             notif = None
-            ya_procesada = False
             
             # Buscar en Supabase
             if self.supabase_service:
@@ -897,34 +915,7 @@ class MainPOSWindow(QMainWindow):
                     }
                     logging.info(f"[DEBUG] ✓ Notificación encontrada: {notif['id_notificacion']}")
                 else:
-                    # Si no encuentra pendiente, buscar TODAS (incluyendo respondidas)
-                    logging.info(f"[DEBUG] No encontrada como pendiente, buscando todas...")
-                    response = self.supabase_service.client.table('notificaciones_pos') \
-                        .select('*, miembros(nombres, apellido_paterno, apellido_materno, telefono)') \
-                        .eq('codigo_pago_generado', codigo_normalizado) \
-                        .execute()
-                    
-                    if response.data and len(response.data) > 0:
-                        item = response.data[0]
-                        miembro = item.get('miembros') or {}
-                        
-                        notif = {
-                            'id_notificacion': item['id_notificacion'],
-                            'id_miembro': item['id_miembro'],
-                            'tipo_notificacion': item['tipo_notificacion'],
-                            'asunto': item['asunto'],
-                            'monto_pendiente': item.get('monto_pendiente'),
-                            'codigo_pago_generado': item.get('codigo_pago_generado'),
-                            'nombres': miembro.get('nombres', ''),
-                            'apellido_paterno': miembro.get('apellido_paterno', ''),
-                            'apellido_materno': miembro.get('apellido_materno', '')
-                        }
-                        
-                        if item.get('respondida'):
-                            ya_procesada = True
-                            logging.info(f"[DEBUG] ⚠️ Código ya procesado: {notif['id_notificacion']}")
-                        else:
-                            logging.info(f"[DEBUG] ✓ Notificación encontrada: {notif['id_notificacion']}")
+                    logging.info(f"[DEBUG] ✗ No se encontró notificación pendiente con código: {codigo_normalizado}")
             else:
                 # Fallback a PostgreSQL
                 logging.info(f"[DEBUG] Buscando en PostgreSQL...")
@@ -948,44 +939,9 @@ class MainPOSWindow(QMainWindow):
                     }
                     logging.info(f"[DEBUG] ✓ Notificación encontrada: {notif['id_notificacion']}")
                 else:
-                    # Si no encuentra pendiente en PostgreSQL, buscar todas
-                    logging.info(f"[DEBUG] No encontrada como pendiente en PostgreSQL, buscando todas...")
-                    result = self.pg_manager.client.table('notificaciones_pos').select(
-                        'id_notificacion,id_miembro,tipo_notificacion,asunto,monto_pendiente,codigo_pago_generado,respondida,miembros(nombres,apellido_paterno,apellido_materno)'
-                    ).eq('codigo_pago_generado', codigo_normalizado).execute()
-                    
-                    if result.data:
-                        datos = result.data[0]
-                        miembro = datos.get('miembros') or {}
-                        notif = {
-                            'id_notificacion': datos['id_notificacion'],
-                            'id_miembro': datos['id_miembro'],
-                            'tipo_notificacion': datos['tipo_notificacion'],
-                            'asunto': datos['asunto'],
-                            'monto_pendiente': datos.get('monto_pendiente'),
-                            'codigo_pago_generado': datos['codigo_pago_generado'],
-                            'nombres': miembro.get('nombres', ''),
-                            'apellido_paterno': miembro.get('apellido_paterno', ''),
-                            'apellido_materno': miembro.get('apellido_materno', '')
-                        }
-                        
-                        if datos.get('respondida'):
-                            ya_procesada = True
-                            logging.info(f"[DEBUG] ⚠️ Código ya procesado: {notif['id_notificacion']}")
-                        else:
-                            logging.info(f"[DEBUG] ✓ Notificación encontrada: {notif['id_notificacion']}")
+                    logging.info(f"[DEBUG] ✗ No se encontró notificación pendiente con código: {codigo_normalizado}")
             
             if notif:
-                # Si ya fue procesada, mostrar advertencia
-                if ya_procesada:
-                    show_warning_dialog(
-                        self,
-                        "Código ya procesado",
-                        f"Este código (CASH-{notif['id_notificacion']}) ya fue procesado.\n"
-                        f"Miembro: {notif['nombres']} {notif['apellido_paterno']}\n"
-                        f"Monto: ${notif.get('monto_pendiente', 0)}"
-                    )
-                
                 logging.info(f"[DEBUG] Abriendo modal de detalles de notificación...")
                 # Cerrar el diálogo de debug primero
                 dialog.accept()

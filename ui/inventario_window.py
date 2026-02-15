@@ -97,7 +97,7 @@ class InventarioWindow(QWidget):
         tipo_layout.addWidget(tipo_label)
         
         self.tipo_combo = QComboBox()
-        self.tipo_combo.addItems(["Todos", "Producto Varios", "Suplemento"])
+        self.tipo_combo.addItems(["Todos", "Producto Varios"])  # Suplementos removidos
         self.tipo_combo.setMinimumHeight(40)
         self.tipo_combo.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_NORMAL))
         self.tipo_combo.currentTextChanged.connect(self.aplicar_filtros)
@@ -423,9 +423,9 @@ class InventarioWindow(QWidget):
                 if tipo_seleccionado == "Producto Varios":
                     if producto['tipo_producto'] != 'varios':
                         continue
-                elif tipo_seleccionado == "Suplemento":
-                    if producto['tipo_producto'] != 'suplemento':
-                        continue
+                # elif tipo_seleccionado == "Suplemento":
+                #     if producto['tipo_producto'] != 'suplemento':
+                #         continue
                 
                 # Filtro de estado de stock
                 if stock_seleccionado == "Bajo Stock":

@@ -107,9 +107,9 @@ class AsignarLockerWindow(QWidget):
         btn_cancelar.clicked.connect(self.cerrar_solicitado.emit)
         button_layout.addWidget(btn_cancelar)
         
-        btn_diarios = TileButton("Ver Diarios", "fa5s.calendar-alt", WindowsPhoneTheme.TILE_MAGENTA)
-        btn_diarios.clicked.connect(self.abrir_diarios_solicitado.emit)
-        button_layout.addWidget(btn_diarios)
+        # btn_diarios = TileButton("Ver Diarios", "fa5s.calendar-alt", WindowsPhoneTheme.TILE_MAGENTA)
+        # btn_diarios.clicked.connect(self.abrir_diarios_solicitado.emit)
+        # button_layout.addWidget(btn_diarios)
         
         btn_actualizar = TileButton("Actualizar", "fa5s.sync", WindowsPhoneTheme.TILE_BLUE)
         btn_actualizar.clicked.connect(self.cargar_asignaciones)
@@ -145,6 +145,9 @@ class AsignarLockerWindow(QWidget):
         """Llenar la tabla con las asignaciones"""
         self.table.setRowCount(0)
         hoy = date.today()
+        
+        # OPTIMIZACIÓN: Cargar lockers disponibles UNA SOLA VEZ antes del bucle
+        lockers_disponibles = self.obtener_lockers_disponibles()
         
         for idx, asig in enumerate(self.asignaciones_data):
             self.table.insertRow(idx)
@@ -201,7 +204,7 @@ class AsignarLockerWindow(QWidget):
                     width: 20px;
                 }}
             """)
-            self.cargar_lockers_mensuales(combo_locker, asig.get('id_locker'))
+            self.cargar_lockers_en_combo(combo_locker, lockers_disponibles, asig.get('id_locker'))
             combo_locker.currentIndexChanged.connect(
                 lambda checked=False, row=idx: self.marcar_cambio(row)
             )
@@ -224,8 +227,8 @@ class AsignarLockerWindow(QWidget):
             item_dias.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, 11, QFont.Bold))
             self.table.setItem(idx, 5, item_dias)
     
-    def cargar_lockers_mensuales(self, combo, id_locker_actual=None):
-        """Llenar combo con lockers de renta mensual disponibles (no asignados)"""
+    def obtener_lockers_disponibles(self):
+        """Obtener lista de lockers disponibles (llamar UNA VEZ antes del bucle)"""
         try:
             # Obtener todos los lockers de renta mensual activos, ordenados ascendente por id
             response_todos = self.pg_manager.client.table('lockers').select(
@@ -240,6 +243,20 @@ class AsignarLockerWindow(QWidget):
             ).eq('id_producto_digital', 9).eq('activa', True).execute()
             
             ids_asignados = {item['id_locker'] for item in (response_asignados.data or [])}
+            
+            return {
+                'todos': todos_lockers,
+                'asignados': ids_asignados
+            }
+        except Exception as e:
+            logging.error(f"Error obteniendo lockers disponibles: {e}")
+            return {'todos': [], 'asignados': set()}
+    
+    def cargar_lockers_en_combo(self, combo, lockers_data, id_locker_actual=None):
+        """Llenar combo con lockers disponibles (recibe datos pre-cargados)"""
+        try:
+            todos_lockers = lockers_data['todos']
+            ids_asignados = lockers_data['asignados']
             
             # Filtrar solo lockers disponibles (no asignados) o que es el actual
             lockers_disponibles = [

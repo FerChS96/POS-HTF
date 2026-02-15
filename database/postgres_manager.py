@@ -265,6 +265,33 @@ class PostgresManager:
             return False
     
     # ========== PRODUCTOS ==========
+
+    def _fetch_inventario_map(self, codigos_internos: List[str], tipo_producto: str, *, chunk_size: int = 200) -> Dict[str, Dict]:
+        """Traer inventario por lote y devolver un mapa codigo_interno -> inventario.
+
+        Evita el patrón N+1 (una consulta por producto), especialmente costoso con Supabase (HTTP).
+        """
+
+        inventario_map: Dict[str, Dict] = {}
+        codigos = [c for c in (codigos_internos or []) if c]
+        if not codigos:
+            return inventario_map
+
+        for i in range(0, len(codigos), chunk_size):
+            chunk = codigos[i:i + chunk_size]
+            response = (
+                self.client.table('inventario')
+                .select('codigo_interno, stock_actual, stock_minimo, id_ubicacion')
+                .eq('tipo_producto', tipo_producto)
+                .in_('codigo_interno', chunk)
+                .execute()
+            )
+            for inv in (response.data or []):
+                codigo = inv.get('codigo_interno')
+                if codigo:
+                    inventario_map[codigo] = inv
+
+        return inventario_map
     
     def get_all_products(self) -> List[Dict]:
         """Obtener todos los productos activos con stock"""
@@ -283,24 +310,27 @@ class PostgresManager:
             response_suplementos = self.client.table('ca_suplementos').select(
                 'id_suplemento, codigo_interno, nombre, precio_venta, tipo, codigo_barras'
             ).eq('activo', True).execute()
+
+            varios_data = response_varios.data or []
+            suplementos_data = response_suplementos.data or []
+
+            inv_varios_map = self._fetch_inventario_map(
+                [p.get('codigo_interno') for p in varios_data],
+                'varios'
+            )
+            inv_suplementos_map = self._fetch_inventario_map(
+                [p.get('codigo_interno') for p in suplementos_data],
+                'suplemento'
+            )
             
             # Procesar productos varios
-            for prod_varios in (response_varios.data or []):
+            for prod_varios in varios_data:
                 codigo_interno = prod_varios.get('codigo_interno')
-                
-                # Obtener stock del inventario
-                inv_response = self.client.table('inventario').select(
-                    'stock_actual, stock_minimo, id_ubicacion'
-                ).eq('codigo_interno', codigo_interno).eq('tipo_producto', 'varios').execute()
-                
-                stock_actual = 0
-                stock_minimo = 0
-                id_ubicacion = None
-                if inv_response.data:
-                    inv = inv_response.data[0]
-                    stock_actual = inv.get('stock_actual', 0)
-                    stock_minimo = inv.get('stock_minimo', 0)
-                    id_ubicacion = inv.get('id_ubicacion')
+
+                inv = inv_varios_map.get(codigo_interno) or {}
+                stock_actual = inv.get('stock_actual', 0)
+                stock_minimo = inv.get('stock_minimo', 0)
+                id_ubicacion = inv.get('id_ubicacion')
                 
                 productos_resultado.append({
                     'id_producto': prod_varios.get('id_producto'),
@@ -316,22 +346,13 @@ class PostgresManager:
                 })
             
             # Procesar suplementos
-            for prod_suplemento in (response_suplementos.data or []):
+            for prod_suplemento in suplementos_data:
                 codigo_interno = prod_suplemento.get('codigo_interno')
-                
-                # Obtener stock del inventario
-                inv_response = self.client.table('inventario').select(
-                    'stock_actual, stock_minimo, id_ubicacion'
-                ).eq('codigo_interno', codigo_interno).eq('tipo_producto', 'suplemento').execute()
-                
-                stock_actual = 0
-                stock_minimo = 0
-                id_ubicacion = None
-                if inv_response.data:
-                    inv = inv_response.data[0]
-                    stock_actual = inv.get('stock_actual', 0)
-                    stock_minimo = inv.get('stock_minimo', 0)
-                    id_ubicacion = inv.get('id_ubicacion')
+
+                inv = inv_suplementos_map.get(codigo_interno) or {}
+                stock_actual = inv.get('stock_actual', 0)
+                stock_minimo = inv.get('stock_minimo', 0)
+                id_ubicacion = inv.get('id_ubicacion')
                 
                 productos_resultado.append({
                     'id_producto': prod_suplemento.get('id_suplemento'),  # Usar id_suplemento como id_producto
@@ -375,24 +396,27 @@ class PostgresManager:
             ).or_(
                 f"nombre.ilike.{search_pattern},codigo_barras.ilike.{search_pattern},codigo_interno.ilike.{search_pattern}"
             ).eq('activo', True).execute()
+
+            varios_data = response_varios.data or []
+            suplementos_data = response_suplementos.data or []
+
+            inv_varios_map = self._fetch_inventario_map(
+                [p.get('codigo_interno') for p in varios_data],
+                'varios'
+            )
+            inv_suplementos_map = self._fetch_inventario_map(
+                [p.get('codigo_interno') for p in suplementos_data],
+                'suplemento'
+            )
             
             # Procesar productos varios
-            for prod_varios in (response_varios.data or []):
+            for prod_varios in varios_data:
                 codigo_interno = prod_varios.get('codigo_interno')
-                
-                # Obtener stock del inventario
-                inv_response = self.client.table('inventario').select(
-                    'stock_actual, stock_minimo, id_ubicacion'
-                ).eq('codigo_interno', codigo_interno).eq('tipo_producto', 'varios').execute()
-                
-                stock_actual = 0
-                stock_minimo = 0
-                id_ubicacion = None
-                if inv_response.data:
-                    inv = inv_response.data[0]
-                    stock_actual = inv.get('stock_actual', 0)
-                    stock_minimo = inv.get('stock_minimo', 0)
-                    id_ubicacion = inv.get('id_ubicacion')
+
+                inv = inv_varios_map.get(codigo_interno) or {}
+                stock_actual = inv.get('stock_actual', 0)
+                stock_minimo = inv.get('stock_minimo', 0)
+                id_ubicacion = inv.get('id_ubicacion')
                 
                 productos_resultado.append({
                     'id_producto': prod_varios.get('id_producto'),
@@ -408,22 +432,13 @@ class PostgresManager:
                 })
             
             # Procesar suplementos
-            for prod_suplemento in (response_suplementos.data or []):
+            for prod_suplemento in suplementos_data:
                 codigo_interno = prod_suplemento.get('codigo_interno')
-                
-                # Obtener stock del inventario
-                inv_response = self.client.table('inventario').select(
-                    'stock_actual, stock_minimo, id_ubicacion'
-                ).eq('codigo_interno', codigo_interno).eq('tipo_producto', 'suplemento').execute()
-                
-                stock_actual = 0
-                stock_minimo = 0
-                id_ubicacion = None
-                if inv_response.data:
-                    inv = inv_response.data[0]
-                    stock_actual = inv.get('stock_actual', 0)
-                    stock_minimo = inv.get('stock_minimo', 0)
-                    id_ubicacion = inv.get('id_ubicacion')
+
+                inv = inv_suplementos_map.get(codigo_interno) or {}
+                stock_actual = inv.get('stock_actual', 0)
+                stock_minimo = inv.get('stock_minimo', 0)
+                id_ubicacion = inv.get('id_ubicacion')
                 
                 productos_resultado.append({
                     'id_producto': prod_suplemento.get('id_suplemento'),  # Usar id_suplemento como id_producto

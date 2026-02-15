@@ -75,28 +75,29 @@ class NuevoProductoWindow(QWidget):
         form_layout.setSpacing(25)
         
         # ===== SELECTOR DE TIPO DE PRODUCTO =====
-        tipo_section = QVBoxLayout()
-        tipo_section.setSpacing(10)
-        
-        tipo_label = QLabel("TIPO DE PRODUCTO *")
-        tipo_label.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_SUBTITLE, QFont.Bold))
-        tipo_label.setStyleSheet(f"color: {WindowsPhoneTheme.PRIMARY_BLUE};")
-        tipo_section.addWidget(tipo_label)
-        
-        self.tipo_combo = QComboBox()
-        self.tipo_combo.addItems(["Producto Normal (Varios)", "Suplemento"])
-        self.tipo_combo.setMinimumHeight(45)
-        self.tipo_combo.currentIndexChanged.connect(self.on_tipo_changed)
-        tipo_section.addWidget(self.tipo_combo)
-        
-        form_layout.addLayout(tipo_section)
-        
-        # Línea divisoria
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
-        line.setStyleSheet(f"background-color: {WindowsPhoneTheme.PRIMARY_BLUE}; max-height: 2px;")
-        form_layout.addWidget(line)
+        # DESHABILITADO: Solo productos normales (Varios)
+        # tipo_section = QVBoxLayout()
+        # tipo_section.setSpacing(10)
+        # 
+        # tipo_label = QLabel("TIPO DE PRODUCTO *")
+        # tipo_label.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_SUBTITLE, QFont.Bold))
+        # tipo_label.setStyleSheet(f"color: {WindowsPhoneTheme.PRIMARY_BLUE};")
+        # tipo_section.addWidget(tipo_label)
+        # 
+        # self.tipo_combo = QComboBox()
+        # self.tipo_combo.addItems(["Producto Normal (Varios)", "Suplemento"])
+        # self.tipo_combo.setMinimumHeight(45)
+        # self.tipo_combo.currentIndexChanged.connect(self.on_tipo_changed)
+        # tipo_section.addWidget(self.tipo_combo)
+        # 
+        # form_layout.addLayout(tipo_section)
+        # 
+        # # Línea divisoria
+        # line = QFrame()
+        # line.setFrameShape(QFrame.HLine)
+        # line.setFrameShadow(QFrame.Sunken)
+        # line.setStyleSheet(f"background-color: {WindowsPhoneTheme.PRIMARY_BLUE}; max-height: 2px;")
+        # form_layout.addWidget(line)
         
         # ===== CAMPOS COMUNES =====
         comunes_title = SectionTitle("INFORMACIÓN GENERAL")
@@ -320,11 +321,12 @@ class NuevoProductoWindow(QWidget):
     
     def on_tipo_changed(self, index):
         """Manejar cambio de tipo de producto"""
-        is_normal = (index == 0)
+        # FORZAR SIEMPRE PRODUCTOS NORMALES - Suplementos deshabilitados
+        is_normal = True  # Siempre productos normales
         
         # Mostrar/ocultar widgets correspondientes
         self.normales_widget.setVisible(is_normal)
-        self.suplementos_widget.setVisible(not is_normal)
+        self.suplementos_widget.setVisible(False)  # Nunca mostrar suplementos
     
     def eventFilter(self, obj, event):
         """Filtrar eventos para detectar Enter del scanner en código de barras"""
@@ -493,7 +495,7 @@ class NuevoProductoWindow(QWidget):
     
     def validar_campos(self):
         """Validar campos del formulario"""
-        is_normal = (self.tipo_combo.currentIndex() == 0)
+        is_normal = True  # Siempre producto normal - (self.tipo_combo.currentIndex() == 0)
         
         # Validar campos comunes
         if not self.codigo_interno_input.text().strip():
@@ -545,7 +547,7 @@ class NuevoProductoWindow(QWidget):
             if not self.validar_campos():
                 return
             
-            is_normal = (self.tipo_combo.currentIndex() == 0)
+            is_normal = True  # Siempre producto normal - (self.tipo_combo.currentIndex() == 0)
             
             # Preparar datos comunes
             codigo_interno = self.codigo_interno_input.text().strip().upper()

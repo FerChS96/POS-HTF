@@ -4,9 +4,10 @@ Convertir PNG a ICO para el icono de la aplicación
 from PIL import Image
 import os
 
-# Rutas
-png_path = os.path.join('assets', 'pos_icono.png')
-ico_path = os.path.join('assets', 'pos_icono.ico')
+# Rutas - usando directorio del script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+png_path = os.path.join(script_dir, 'assets', 'pos_icono.png')
+ico_path = os.path.join(script_dir, 'assets', 'pos_icono.ico')
 
 try:
     # Abrir imagen PNG

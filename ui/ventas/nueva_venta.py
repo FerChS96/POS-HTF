@@ -769,9 +769,20 @@ class NuevaVentaWindow(QWidget):
                 # Limpiar carrito
                 self.carrito.clear()
                 self.actualizar_carrito()
-                
-                # Recargar productos para actualizar stock
-                self.cargar_productos()
+
+                # Refrescar productos visibles para actualizar stock.
+                # NO cargar todo el inventario (get_all_products) porque es costoso.
+                try:
+                    texto_busqueda = (self.search_bar.text() if hasattr(self, 'search_bar') else "").strip()
+                except Exception:
+                    texto_busqueda = ""
+
+                if texto_busqueda:
+                    # Reutiliza el mismo flujo del botón "Buscar"
+                    self.buscar_productos()
+                else:
+                    # Mantener comportamiento de no precargar catálogo
+                    self.mostrar_mensaje_busqueda()
                 
                 logging.info(f"Venta {venta_id} procesada exitosamente: ${self.total_venta:.2f}")
             else:

@@ -140,9 +140,18 @@ class POSApplication:
         try:
             self.current_user = user_data
             logging.info(f"Usuario autenticado: {self.current_user['username']}")
+
+            role = (self.current_user.get('rol') or '').lower()
             
             # Cerrar ventana de login
             self.login_window.close()
+
+            # Roles administrativos: no requieren turno (ventas deshabilitadas en UI)
+            if role in ('administrador', 'sistemas'):
+                self.turno_id = None
+                logging.info(f"Rol '{role}': no se abre/crea turno de caja")
+                self.show_main_window()
+                return
             
             # Verificar si ya tiene un turno abierto
             turno_abierto = self.verificar_turno_abierto()
