@@ -6,9 +6,9 @@ Soporta impresoras como EC-PM-58110-USB
 import logging
 from typing import List, Dict, Optional
 import serial
+from serial.tools import list_ports
 import time
 from datetime import datetime
-
 logger = logging.getLogger(__name__)
 
 
@@ -55,8 +55,10 @@ class EscPosDriver:
         self.puerto = puerto
         self.baudrate = baudrate
         self.timeout = timeout
+        self.write_timeout = timeout
         self.ser = None
         self.conectado = False
+        self.hubo_error_envio = False
         
     def conectar(self) -> bool:
         """Conectar con la impresora"""
@@ -65,6 +67,7 @@ class EscPosDriver:
                 port=self.puerto,
                 baudrate=self.baudrate,
                 timeout=self.timeout,
+                write_timeout=self.write_timeout,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 bytesize=serial.EIGHTBITS
@@ -87,6 +90,7 @@ class EscPosDriver:
     def enviar_comando(self, comando: bytes) -> bool:
         """Enviar comando a la impresora"""
         if not self.conectado:
+            self.hubo_error_envio = True
             logger.warning("Impresora no conectada")
             return False
         
@@ -94,7 +98,18 @@ class EscPosDriver:
             self.ser.write(comando)
             time.sleep(0.1)
             return True
+        except serial.SerialTimeoutException as e:
+            self.hubo_error_envio = True
+            logger.error(f"Timeout al escribir en impresora ({self.puerto}): {e}")
+            try:
+                if self.ser and self.ser.is_open:
+                    self.ser.close()
+            except Exception:
+                pass
+            self.conectado = False
+            return False
         except Exception as e:
+            self.hubo_error_envio = True
             logger.error(f"Error al enviar comando: {e}")
             return False
     
@@ -144,15 +159,18 @@ class EscPosDriver:
     
     def linea_punteada(self):
         """Imprimir línea punteada"""
-        self.texto("." * 42)
+        ancho = getattr(self, 'ancho_linea', 32)
+        self.texto("." * ancho)
     
     def linea_solida(self):
         """Imprimir línea sólida"""
-        self.texto("=" * 42)
+        ancho = getattr(self, 'ancho_linea', 32)
+        self.texto("=" * ancho)
     
     def linea_guiones(self):
         """Imprimir línea con guiones"""
-        self.texto("-" * 42)
+        ancho = getattr(self, 'ancho_linea', 32)
+        self.texto("-" * ancho)
     
     def texto(self, contenido: str, encoding: str = 'utf-8'):
         """Imprimir texto"""
@@ -186,7 +204,28 @@ class TicketPrinter(EscPosDriver):
     
     def __init__(self, puerto: str = "COM1"):
         super().__init__(puerto)
-        self.ancho_linea = 42
+        self.ancho_linea = 32  # 58 mm
+
+    @staticmethod
+    def obtener_puertos_preferidos(puerto_preferido: str = "COM3") -> List[str]:
+        """Retornar puertos COM disponibles priorizando uno preferido."""
+        preferido = (puerto_preferido or "").strip().upper()
+
+        try:
+            detectados = [p.device.upper() for p in list_ports.comports() if p.device]
+        except Exception as e:
+            logger.warning(f"No se pudieron listar puertos COM: {e}")
+            detectados = []
+
+        puertos = []
+        if preferido and preferido in detectados:
+            puertos.append(preferido)
+
+        for puerto in detectados:
+            if puerto not in puertos:
+                puertos.append(puerto)
+
+        return puertos
     
     def imprimir_titulo_tienda(self, nombre_tienda: str, subtitulo: str = ""):
         """Imprimir encabezado de tienda"""
@@ -220,15 +259,15 @@ class TicketPrinter(EscPosDriver):
         self.alinear_izquierda()
         self.fuente_normal()
         
-        # Nombre del producto (limitado a 30 caracteres)
-        nombre_corto = nombre[:30]
+        # Nombre del producto (limitado para ticket de 58 mm)
+        nombre_corto = nombre[:22]
         self.texto(nombre_corto)
         
         # Cantidad, precio y subtotal
         cantidad_str = f"{cantidad:.0f}x ${precio:.2f}"
         subtotal_str = f"${subtotal:.2f}"
         
-        espacios = self.ancho_linea - len(cantidad_str) - len(subtotal_str)
+        espacios = max(1, self.ancho_linea - len(cantidad_str) - len(subtotal_str))
         linea = cantidad_str + " " * espacios + subtotal_str
         self.texto(linea)
     
@@ -287,6 +326,7 @@ class TicketPrinter(EscPosDriver):
             return False
         
         try:
+            self.hubo_error_envio = False
             self.inicializar()
             
             # Encabezado
@@ -328,6 +368,10 @@ class TicketPrinter(EscPosDriver):
             
             if datos_ticket.get('cortar', True):
                 self.cortar_papel()
+
+            if self.hubo_error_envio:
+                logger.error("❌ Ticket con errores de envío ESC/POS")
+                return False
             
             logger.info("✅ Ticket impreso correctamente")
             return True

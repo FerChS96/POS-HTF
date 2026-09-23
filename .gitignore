@@ -1,7 +1,13 @@
+# Credenciales reales. La plantilla .env.example SI se versiona: no lleva
+# secretos y documenta que variables hay que configurar.
 .env
-.env.example
 create_test_user_recepcionista.py
 create_users_alexa_balbina.py
+
+# Logs y base local: se regeneran solos, no deben versionarse
+*.log
+pos_htf.txt
+*.db
 
 # PyInstaller
 build/

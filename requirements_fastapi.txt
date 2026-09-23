@@ -1,0 +1,7 @@
+# OBSOLETO: las dependencias de FastAPI (fastapi, uvicorn[standard], pydantic)
+# ya están consolidadas en requirements.txt, porque main.py las necesita para
+# arrancar. Este archivo se conserva solo como puntero para no romper scripts
+# o documentación que todavía lo mencionen.
+#
+# Usa:  pip install -r requirements.txt
+-r requirements.txt

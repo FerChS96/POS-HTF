@@ -135,11 +135,15 @@ class CierreCajaWindow(QWidget):
         
         btn_cerrar_caja = TileButton("Cerrar Caja", "fa5s.lock", WindowsPhoneTheme.TILE_GREEN)
         btn_cerrar_caja.clicked.connect(self.procesar_cierre)
-        
+
+        btn_imprimir = TileButton("Imprimir Resumen", "fa5s.print", WindowsPhoneTheme.TILE_BLUE)
+        btn_imprimir.clicked.connect(self.imprimir_resumen_ventas)
+
         btn_cancelar = TileButton("Cancelar", "fa5s.times", WindowsPhoneTheme.TILE_RED)
         btn_cancelar.clicked.connect(self.cerrar_solicitado.emit)
-        
+
         buttons_layout.addWidget(btn_cerrar_caja)
+        buttons_layout.addWidget(btn_imprimir)
         buttons_layout.addWidget(btn_cancelar)
         
         layout.addLayout(buttons_layout)
@@ -206,14 +210,14 @@ class CierreCajaWindow(QWidget):
         self.esperado_tile = InfoTile("TOTAL ESPERADO", "fa5s.dollar-sign", WindowsPhoneTheme.TILE_BLUE)
         self.esperado_tile.setMinimumHeight(140)
         self.esperado_value = self.esperado_tile.add_main_value("$0.00")
-        self.esperado_tile.add_secondary_value("según ventas")
+        self.esperado_tile.add_secondary_value("solo efectivo + monto inicial")
         summary_layout.addWidget(self.esperado_tile)
         
         # Número de ventas
         self.ventas_tile = InfoTile("TRANSACCIONES", "fa5s.shopping-cart", WindowsPhoneTheme.TILE_GREEN)
         self.ventas_tile.setMinimumHeight(140)
         self.ventas_value = self.ventas_tile.add_main_value("0")
-        self.ventas_tile.add_secondary_value("ventas realizadas")
+        self.ventas_subtotales = self.ventas_tile.add_secondary_value("Efec: $0.00 | Transf: $0.00")
         summary_layout.addWidget(self.ventas_tile)
         
         # Total contado
@@ -231,36 +235,173 @@ class CierreCajaWindow(QWidget):
             if not self.turno_abierto:
                 logging.warning("No hay turno abierto para cargar resumen")
                 self.total_esperado_valor = 0.0
+                self.total_ventas_efectivo_valor = 0.0
+                self.total_ventas_transferencia_valor = 0.0
                 return
             
             # Obtener monto inicial del turno
             monto_inicial = float(self.turno_abierto.get('monto_inicial', 0))
             
-            # Obtener ventas del turno actual usando Supabase
+            # Obtener ventas completadas del turno (todos los métodos)
             response = self.pg_manager.client.table('ventas').select(
-                'id_venta, fecha, total, usuarios(nombre_completo)'
-            ).eq('id_turno', self.turno_abierto['id_turno']).order('fecha', desc=True).execute()
+                'id_venta, fecha, total, metodo_pago'
+            ).eq('id_turno', self.turno_abierto['id_turno']).eq('estado', 'completada').order('fecha', desc=True).execute()
             
             ventas = response.data or []
-            total_ventas_turno = sum(float(v.get('total', 0)) for v in ventas)
+
+            total_ventas_efectivo = sum(
+                float(v.get('total', 0) or 0)
+                for v in ventas
+                if str(v.get('metodo_pago', '')).lower() == 'efectivo'
+            )
+            total_ventas_transferencia = sum(
+                float(v.get('total', 0) or 0)
+                for v in ventas
+                if str(v.get('metodo_pago', '')).lower() in {'transferencia', 'transferencia_bancaria'}
+            )
             num_ventas = len(ventas)
             
-            # Total esperado = monto inicial + ventas del turno
-            total_esperado = monto_inicial + total_ventas_turno
+            # Total esperado en caja = monto inicial + ventas en efectivo
+            total_esperado = monto_inicial + total_ventas_efectivo
             
             # Actualizar widgets
             self.esperado_value.setText(f"${total_esperado:.2f}")
             self.ventas_value.setText(str(num_ventas))
+            self.ventas_subtotales.setText(
+                f"Efec: ${total_ventas_efectivo:.2f} | Transf: ${total_ventas_transferencia:.2f}"
+            )
             
             # Guardar valores para cálculos
             self.total_esperado_valor = total_esperado
+            self.total_ventas_efectivo_valor = total_ventas_efectivo
+            self.total_ventas_transferencia_valor = total_ventas_transferencia
+            self.num_ventas_valor = num_ventas
             
-            logging.info(f"Resumen del turno: Inicial=${monto_inicial:.2f}, Ventas=${total_ventas_turno:.2f}, Esperado=${total_esperado:.2f}")
+            logging.info(
+                f"Resumen del turno: Inicial=${monto_inicial:.2f}, "
+                f"VentasEfectivo=${total_ventas_efectivo:.2f}, "
+                f"VentasTransferencia=${total_ventas_transferencia:.2f}, "
+                f"EsperadoCaja=${total_esperado:.2f}"
+            )
             
         except Exception as e:
             logging.error(f"Error cargando resumen: {e}")
             self.total_esperado_valor = 0.0
-            
+            self.total_ventas_efectivo_valor = 0.0
+            self.total_ventas_transferencia_valor = 0.0
+            self.num_ventas_valor = 0
+
+    def _formatear_fecha(self, valor):
+        """Pasar una fecha de Supabase (texto ISO) a formato legible."""
+        if not valor:
+            return ""
+        try:
+            if isinstance(valor, str):
+                return datetime.fromisoformat(
+                    valor.replace('Z', '+00:00')
+                ).strftime('%d/%m/%Y %H:%M')
+            return valor.strftime('%d/%m/%Y %H:%M')
+        except Exception:
+            return str(valor)
+
+    def construir_datos_corte(self):
+        """
+        Armar el resumen del turno para el ticket de corte.
+
+        El arqueo de efectivo (contado y diferencia) solo se incluye si el
+        cajero ya contó la caja; si no, el ticket sale con el resumen de
+        ventas únicamente.
+        """
+        efectivo = float(getattr(self, 'total_ventas_efectivo_valor', 0.0) or 0.0)
+        transferencia = float(getattr(self, 'total_ventas_transferencia_valor', 0.0) or 0.0)
+
+        datos = {
+            'turno': (self.turno_abierto or {}).get('id_turno'),
+            'cajero': self.user_data.get('nombre_completo') or self.user_data.get('username', ''),
+            'fecha_apertura': self._formatear_fecha(
+                (self.turno_abierto or {}).get('fecha_apertura')
+            ),
+            'fecha_hora': datetime.now().strftime('%d/%m/%Y %H:%M'),
+            'num_ventas': int(getattr(self, 'num_ventas_valor', 0) or 0),
+            'total_efectivo': efectivo,
+            'total_transferencia': transferencia,
+            'total_ventas': efectivo + transferencia,
+            'monto_inicial': float((self.turno_abierto or {}).get('monto_inicial', 0) or 0),
+            'total_esperado': float(getattr(self, 'total_esperado_valor', 0.0) or 0.0),
+        }
+
+        contado = getattr(self, 'total_contado_valor', None)
+        if contado is not None:
+            datos['total_contado'] = float(contado)
+            datos['diferencia'] = float(contado) - datos['total_esperado']
+
+        return datos
+
+    def imprimir_resumen_ventas(self):
+        """Imprimir en la impresora térmica el resumen de ventas del turno."""
+        from services.printing.windows_printer_manager import (
+            TicketPrinterWindows,
+            WindowsPrinterManager,
+        )
+
+        if not self.turno_abierto:
+            show_warning_dialog(
+                self,
+                "Sin turno abierto",
+                "No hay un turno de caja abierto que resumir."
+            )
+            return
+
+        try:
+            # Releer para no imprimir cifras viejas si hubo ventas recientes.
+            self.cargar_resumen()
+            datos = self.construir_datos_corte()
+
+            nombre_impresora = WindowsPrinterManager.resolver_impresora()
+            if not nombre_impresora:
+                show_error_dialog(
+                    self,
+                    "Impresora no encontrada",
+                    "No se encontró la impresora de tickets.",
+                    "Instaladas: "
+                    + ", ".join(WindowsPrinterManager.obtener_impresoras_instaladas())
+                    + "\n\nConfigura TICKET_IMPRESORA en el archivo .env con el "
+                      "nombre exacto de la impresora."
+                )
+                return
+
+            impresora = TicketPrinterWindows(nombre_impresora)
+            try:
+                if impresora.conectar() and impresora.imprimir_corte(datos):
+                    logging.info(
+                        f"[OK] Resumen del turno {datos.get('turno')} impreso en "
+                        f"{nombre_impresora}"
+                    )
+                    show_success_dialog(
+                        self,
+                        "Resumen impreso",
+                        f"Se imprimió el resumen del turno #{datos.get('turno')}."
+                    )
+                else:
+                    show_error_dialog(
+                        self,
+                        "Error de impresión",
+                        "No se pudo imprimir el resumen.",
+                        f"Impresora: {nombre_impresora}\n\n"
+                        "Verifica que esté encendida, con papel y conectada."
+                    )
+            finally:
+                impresora.desconectar()
+
+        except Exception as e:
+            logging.error(f"[ERROR] Error imprimiendo resumen del turno: {e}")
+            show_error_dialog(
+                self,
+                "Error",
+                "Ocurrió un error al imprimir el resumen.",
+                str(e)
+            )
+
     def calcular_diferencia(self):
         """Calcular diferencia entre esperado y contado"""
         try:
@@ -440,7 +581,10 @@ class CierreCajaWindow(QWidget):
         
         # Confirmar cierre
         resumen = (
-            f"Total esperado: ${self.total_esperado_valor:.2f}\n\n"
+            f"Monto inicial: ${float(self.turno_abierto.get('monto_inicial', 0)):.2f}\n"
+            f"Subtotal efectivo (sí cuenta en caja): ${float(getattr(self, 'total_ventas_efectivo_valor', 0.0)):.2f}\n"
+            f"Subtotal transferencia (informativo): ${float(getattr(self, 'total_ventas_transferencia_valor', 0.0)):.2f}\n"
+            f"Total esperado en caja (solo efectivo): ${self.total_esperado_valor:.2f}\n\n"
             f"Efectivo en caja: ${efectivo:.2f}\n"
             "─────────────────────\n"
             f"Total contado: ${self.total_contado_valor:.2f}\n"
@@ -450,7 +594,7 @@ class CierreCajaWindow(QWidget):
         if show_confirmation_dialog(
             self,
             "Confirmar Cierre",
-            "Revise el resumen antes de confirmar.",
+            "Revise el resumen antes de confirmar (solo efectivo se cuenta en caja).",
             detail=resumen,
             confirm_text="Sí, cerrar",
             cancel_text="Volver"
@@ -499,8 +643,8 @@ class CierreCajaWindow(QWidget):
             # Actualizar turno existente
             self.pg_manager.client.table('turnos_caja').update({
                 'fecha_cierre': datetime.now().isoformat(),
-                'total_ventas_efectivo': cierre_data['total_esperado'],
-                'monto_esperado': float(self.turno_abierto['monto_inicial']) + cierre_data['total_esperado'],
+                'total_ventas_efectivo': float(getattr(self, 'total_ventas_efectivo_valor', 0.0)),
+                'monto_esperado': cierre_data['total_esperado'],
                 'monto_real_cierre': cierre_data['total_contado'],
                 'diferencia': cierre_data['diferencia'],
                 'cerrado': True,

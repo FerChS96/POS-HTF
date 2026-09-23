@@ -40,6 +40,7 @@ from ui.ventas import (
     NuevaVentaWindow,
     VentasDiaWindow,
     HistorialVentasWindow,
+    CancelarPagosWindow,
     CierreCajaWindow
 )
 
@@ -61,7 +62,7 @@ from ui.lockers_window import LockersWindow
 from ui.asignar_locker_window import AsignacionesLockersWindow
 from ui.asignar_locker_diario_window import AsignarLockerDiarioWindow
 from ui.historial_lockers_window import HistorialLockersWindow
-from utils.monitor_entradas import MonitorEntradas
+from utils.monitor_entradas_fastapi import MonitorEntradasFastAPI
 from database.postgres_manager import PostgresManager
 
 
@@ -94,7 +95,7 @@ class MainPOSWindow(QMainWindow):
         # Variables de estado
         self.current_tab = 0
         
-        # Monitor de entradas
+        # Monitor de entradas FastAPI
         self.monitor_entradas = None
         self.notificaciones_activas = []  # Lista de notificaciones abiertas
         
@@ -110,10 +111,10 @@ class MainPOSWindow(QMainWindow):
         return (self.user_data.get('rol') or '').lower()
 
     def _sales_disabled_for_role(self) -> bool:
-        return self._role_lower() in ('administrador', 'sistemas')
+        return self._role_lower() == 'administrador'
 
     def _default_tab_index(self) -> int:
-        # Para administrador/sistemas arrancar en Admin (evitar ver Ventas)
+        # Para administrador arrancar en Admin (evitar ver Ventas)
         if self._sales_disabled_for_role():
             return 3
         return 0
@@ -183,7 +184,7 @@ class MainPOSWindow(QMainWindow):
         if role == 'recepcionista':
             tabs = [t for t in tabs if t['name'] not in ('Inventario', 'Admin')]
 
-        # Administrador/Sistemas: ocultar Ventas
+        # Administrador: ocultar Ventas
         if self._sales_disabled_for_role():
             tabs = [t for t in tabs if t['name'] != 'Ventas']
         
@@ -386,6 +387,10 @@ class MainPOSWindow(QMainWindow):
             btn_historial_lockers = TileButton("Historial\nLockers", "fa5s.key", WindowsPhoneTheme.TILE_MAGENTA)
             btn_historial_lockers.clicked.connect(self.abrir_historial_lockers)
             admin_grid.addWidget(btn_historial_lockers, 1, 3)
+
+            btn_cancelar_pagos = TileButton("Cancelar\nPagos", "fa5s.ban", WindowsPhoneTheme.TILE_RED)
+            btn_cancelar_pagos.clicked.connect(self.abrir_cancelar_pagos)
+            admin_grid.addWidget(btn_cancelar_pagos, 2, 0)
         else:
             # Si no es administrador, mostrar mensaje
             no_access_label = StyledLabel(
@@ -806,6 +811,29 @@ class MainPOSWindow(QMainWindow):
             logging.info("Abriendo widget de historial de lockers")
         except Exception as e:
             logging.error(f"Error abriendo historial de lockers: {e}")
+
+    def abrir_cancelar_pagos(self):
+        """Abrir widget para cancelar pagos desde administración"""
+        try:
+            self.top_bar.set_title("CANCELAR PAGOS")
+            self.nav_bar.hide()
+
+            cancelar_pagos_widget = CancelarPagosWindow(
+                self.pg_manager,
+                self.supabase_service,
+                self.user_data,
+                self
+            )
+            cancelar_pagos_widget.cerrar_solicitado.connect(self.volver_a_administracion)
+
+            self.stacked_widget.addWidget(cancelar_pagos_widget)
+            self.stacked_widget.setCurrentWidget(cancelar_pagos_widget)
+
+            QTimer.singleShot(0, self.update_layout)
+
+            logging.info("Abriendo widget de cancelación de pagos")
+        except Exception as e:
+            logging.error(f"Error abriendo cancelación de pagos: {e}")
             
     def abrir_cierre_caja(self):
         """Abrir widget de cierre de caja"""
@@ -1533,30 +1561,43 @@ class MainPOSWindow(QMainWindow):
         
         logging.info("Volviendo a página de miembros")
     
-    # ========== MONITOR DE ENTRADAS ==========
+    # ========== MONITOR DE ENTRADAS FASTAPI ==========
     
     def iniciar_monitor_entradas(self):
-        """Inicializar y arrancar el monitor de entradas"""
+        """Inicializar y arrancar el monitor de entradas FastAPI"""
         try:
-            # Crear monitor con Supabase Realtime
-            self.monitor_entradas = MonitorEntradas(
-                self.pg_manager,
-                supabase_service=self.supabase_service
+            if not self.pg_manager:
+                logging.warning("PostgresManager no disponible, monitor de entradas no se iniciará")
+                return
+            
+            # Crear monitor FastAPI (servidor se inicia automáticamente)
+            # listen_host=None: lo resuelve la configuración de seguridad
+            # (0.0.0.0 solo si TORNIQUETE_API_TOKEN está configurado;
+            #  127.0.0.1 si no, para no exponer un servidor sin autenticar).
+            self.monitor_entradas = MonitorEntradasFastAPI(
+                postgres_manager=self.pg_manager,
+                host="127.0.0.1",
+                port=8001,
+                listen_host=None
             )
 
             # Conectar señal
             self.monitor_entradas.nueva_entrada_detectada.connect(self.mostrar_notificacion_entrada)
 
-            # Iniciar monitoreo
+            # Iniciar monitoreo (esto inicia el servidor FastAPI automáticamente)
             self.monitor_entradas.iniciar()
 
-            logging.info("Monitor de entradas iniciado exitosamente")
+            logging.info("[OK] Monitor de entradas FastAPI iniciado exitosamente")
+            logging.info(
+                f"[SERVIDOR] Escuchando en "
+                f"http://{self.monitor_entradas.listen_host}:8001/entrada"
+            )
 
         except Exception as e:
-            logging.error(f"Error iniciando monitor de entradas: {e}")
+            logging.error(f"[ERROR] Error iniciando monitor de entradas: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             self.monitor_entradas = None
-        except Exception as e:
-            logging.error(f"Error iniciando monitor de entradas: {e}")
     
     def mostrar_notificacion_entrada(self, entrada_data):
         """Mostrar notificación cuando se detecta una nueva entrada"""
@@ -1569,7 +1610,16 @@ class MainPOSWindow(QMainWindow):
             nombres = entrada_data.get('nombres', 'N/A')
             apellido_paterno = entrada_data.get('apellido_paterno', '')
             id_entrada = entrada_data.get('id_entrada', 'N/A')
-            logging.info(f"🔔 Nueva entrada detectada - ID: {id_entrada}, Miembro: {nombres} {apellido_paterno}")
+            activas_count = len(self.notificaciones_activas)
+            logging.info(f"[ENTRADA] Nueva entrada detectada - ID: {id_entrada}, Miembro: {nombres} {apellido_paterno}")
+            logging.info(f"[MONITOR] Notificaciones activas al recibir señal: {activas_count}")
+            if activas_count >= 3:
+                logging.warning(f"[MONITOR] ALERTA: hay {activas_count} notificaciones activas (>= 3). Posible bloqueo de nuevas ventanas.")
+                for i, n in enumerate(self.notificaciones_activas):
+                    try:
+                        logging.warning(f"[MONITOR]   [{i}] visible={n.isVisible()} pos=({n.x()},{n.y()}) size=({n.width()}x{n.height()}) id={getattr(n, 'miembro_data', {}).get('id_entrada', '?')}")
+                    except Exception as log_ex:
+                        logging.warning(f"[MONITOR]   [{i}] error leyendo estado: {log_ex}")
 
             # Usar QTimer.singleShot para diferir la creación al próximo ciclo del event loop
             # Esto asegura que se ejecute en el hilo principal de manera segura
@@ -1583,12 +1633,23 @@ class MainPOSWindow(QMainWindow):
     def _crear_notificacion_segura(self, entrada_data):
         """Crear la notificación de manera segura en el hilo principal"""
         try:
+            id_entrada = entrada_data.get('id_entrada', 'N/A')
+            logging.info(f"[MONITOR] _crear_notificacion_segura inicio - ID: {id_entrada}, activas previas: {len(self.notificaciones_activas)}")
+
+            # Limpiar referencias a notificaciones ya cerradas/destruidas
+            antes = len(self.notificaciones_activas)
+            self.notificaciones_activas = [n for n in self.notificaciones_activas if n.isVisible()]
+            despues = len(self.notificaciones_activas)
+            if antes != despues:
+                logging.info(f"[MONITOR] Limpieza de notificaciones no visibles: {antes} -> {despues}")
+
             # Crear ventana de notificación (sin auto-cierre)
             notificacion = NotificacionEntradaWidget(
                 miembro_data=entrada_data,
                 parent=self,
                 duracion=0  # 0 = no auto-cerrar, usuario debe cerrar manualmente
             )
+            logging.info(f"[MONITOR] NotificacionEntradaWidget creada - size=({notificacion.width()}x{notificacion.height()}) windowFlags={int(notificacion.windowFlags())}")
 
             # Posicionar en la esquina superior derecha
             self.posicionar_notificacion(notificacion)
@@ -1601,11 +1662,13 @@ class MainPOSWindow(QMainWindow):
 
             # Agregar a lista de notificaciones activas
             self.notificaciones_activas.append(notificacion)
+            logging.info(f"[MONITOR] Notificacion agregada a lista. Total activas ahora: {len(self.notificaciones_activas)}")
 
             # Mostrar
             notificacion.show()
+            logging.info(f"[MONITOR] notificacion.show() llamado - isVisible={notificacion.isVisible()} pos=({notificacion.x()},{notificacion.y()})")
 
-            logging.info(f"✅ Notificación mostrada para entrada ID: {entrada_data.get('id_entrada', 'N/A')}")
+            logging.info(f"[OK] Notificacion mostrada para entrada ID: {id_entrada}")
 
         except Exception as e:
             logging.error(f"Error creando notificación segura: {e}")
@@ -1613,31 +1676,66 @@ class MainPOSWindow(QMainWindow):
             traceback.print_exc()
 
     def posicionar_notificacion(self, notificacion):
-        """Posicionar notificación en la pantalla"""
-        # Obtener geometría de la ventana principal
-        main_geometry = self.geometry()
-        
-        # Calcular posición (esquina superior derecha con margen)
+        """Posicionar notificación en la pantalla sin salirse del área visible.
+
+        Las notificaciones se apilan verticalmente en la esquina superior derecha.
+        Cuando la columna se llena, se abre una segunda columna a la izquierda,
+        y así sucesivamente, garantizando que siempre sean visibles.
+        """
+        from PySide6.QtWidgets import QApplication
+
+        screen = QApplication.primaryScreen()
+        screen_geom = screen.availableGeometry() if screen else self.geometry()
+
         margen = 20
-        x = main_geometry.right() - notificacion.width() - margen
-        y = main_geometry.top() + margen
-        
-        # Ajustar posición si hay otras notificaciones
-        offset_vertical = 0
+        gap = 10
+        notif_w = notificacion.width()
+        notif_h = notificacion.height()
+
+        # Límites seguros de la pantalla
+        area_top = screen_geom.top() + margen
+        area_bottom = screen_geom.bottom() - margen
+        area_right = screen_geom.right() - margen
+
+        # Calcular posición iterando sobre las notificaciones activas visibles
+        # para encontrar el primer hueco libre que quepa dentro de la pantalla.
+        # Estrategia: columnas de derecha a izquierda.
+        columna = 0
+        y_acum = area_top
+
         for notif in self.notificaciones_activas:
-            if notif.isVisible():
-                offset_vertical += notif.height() + 10
-        
-        y += offset_vertical
-        
-        # Establecer posición
+            if not notif.isVisible():
+                continue
+            y_siguiente = y_acum + notif.height() + gap
+            if y_siguiente + notif_h > area_bottom:
+                # Esta columna se llenó, pasar a la siguiente (más a la izquierda)
+                columna += 1
+                y_acum = area_top
+            else:
+                y_acum = y_siguiente
+
+        x = area_right - notif_w - columna * (notif_w + gap)
+        y = y_acum
+
+        # Salvaguarda: si incluso con columnas x queda fuera, forzar al área visible
+        x = max(screen_geom.left() + margen, x)
+        y = max(area_top, min(y, area_bottom - notif_h))
+
+        logging.info(
+            f"[MONITOR] posicionar_notificacion - columna={columna} pos=({x},{y}) "
+            f"notif_size=({notif_w}x{notif_h}) pantalla=({screen_geom.width()}x{screen_geom.height()})"
+        )
+
         notificacion.move(x, y)
     
     def remover_notificacion(self, notificacion):
         """Remover notificación de la lista activa"""
+        id_entrada = getattr(notificacion, 'miembro_data', {}).get('id_entrada', '?')
         if notificacion in self.notificaciones_activas:
             self.notificaciones_activas.remove(notificacion)
-            logging.debug(f"Notificación removida. Activas: {len(self.notificaciones_activas)}")
+            logging.info(f"[MONITOR] Notificacion removida (ID entrada: {id_entrada}). Activas restantes: {len(self.notificaciones_activas)}")
+        else:
+            logging.warning(f"[MONITOR] remover_notificacion: la notificacion (ID entrada: {id_entrada}) NO estaba en la lista activa (posible doble cierre).")
     
     def closeEvent(self, event):
         """Evento al cerrar la ventana principal"""
@@ -1685,11 +1783,11 @@ class MainPOSWindow(QMainWindow):
                 except Exception as e:
                     logging.error(f"Error verificando turno al cerrar: {e}")
             
-            # Detener monitor de entradas
+            # Detener monitor de entradas FastAPI
             if self.monitor_entradas:
                 try:
                     self.monitor_entradas.detener()
-                    logging.info("Monitor de entradas detenido")
+                    logging.info("Monitor de entradas FastAPI detenido")
                 except Exception as e:
                     logging.error(f"Error deteniendo monitor de entradas: {e}")
             

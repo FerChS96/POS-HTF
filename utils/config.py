@@ -3,6 +3,7 @@ Configuración de la aplicación POS HTF
 """
 
 import os
+import logging
 from dotenv import load_dotenv
 
 class Config:
@@ -42,28 +43,89 @@ class Config:
         password = os.getenv('DB_PASSWORD', 'password')
         self.DB_PASSWORD = password.strip('"\'') if password else 'password'
 
+    def get_missing_credentials(self):
+        """
+        Devolver la lista de credenciales de Supabase que faltan, por nombre.
+
+        La app NO tiene un modo offline real: sin Supabase no puede leer ni
+        escribir nada. Por eso esto es un fallo duro, no una advertencia.
+
+        Returns:
+            list[str]: nombres de las variables faltantes (vacía si todo está bien).
+        """
+        faltantes = []
+
+        if not self.SUPABASE_URL:
+            faltantes.append('SUPABASE_URL')
+
+        # La llave de servicio bypasea RLS; si no está, SUPABASE_KEY sirve igual.
+        if not (self.SUPABASE_ROLE_KEY or self.SUPABASE_KEY):
+            faltantes.append('SUPABASE_ROLE_KEY (o SUPABASE_KEY)')
+
+        return faltantes
+
     def validate_config(self):
-        """Validar configuración básica"""
-        required_vars = ['SUPABASE_URL', 'SUPABASE_KEY']
-        missing_vars = []
-        
-        for var in required_vars:
-            if not getattr(self, var):
-                missing_vars.append(var)
-        
-        if missing_vars:
-            print(f"Advertencia: Variables de entorno faltantes: {', '.join(missing_vars)}")
-            print("La aplicación funcionará en modo offline únicamente.")
+        """
+        Validar que existan las credenciales de Supabase.
+
+        Returns:
+            bool: True si la configuración está completa, False si falta algo.
+        """
+        faltantes = self.get_missing_credentials()
+
+        if faltantes:
+            logging.error(
+                f"[ERROR] Variables de entorno faltantes: {', '.join(faltantes)}"
+            )
+            logging.error(
+                "[ERROR] Configúralas en POS_HTF/.env; sin ellas el POS no puede "
+                "conectarse a Supabase."
+            )
             self.OFFLINE_MODE = True
-        
-        return len(missing_vars) == 0
-    
+            return False
+
+        # Aviso no bloqueante: sin la llave de servicio, RLS puede bloquear
+        # operaciones administrativas.
+        if not os.getenv('SUPABASE_ROLE_KEY'):
+            logging.warning(
+                "[AVISO] SUPABASE_ROLE_KEY no está definida; se usará SUPABASE_KEY "
+                "y RLS puede bloquear algunas operaciones."
+            )
+
+        self.OFFLINE_MODE = False
+        logging.info("[OK] Credenciales de Supabase presentes")
+        return True
+
     def get_database_path(self):
         """Obtener ruta completa de la base de datos"""
         return os.path.abspath(self.DATABASE_PATH)
-    
+
+    def get_supabase_config(self):
+        """
+        Obtener la configuración de Supabase como diccionario.
+
+        Es lo que espera `PostgresManager` (lee `url` y `key` de su db_config).
+        Se prefiere SUPABASE_ROLE_KEY (bypasea RLS) con respaldo a SUPABASE_KEY.
+
+        Returns:
+            dict: {'url': str, 'key': str}
+        """
+        return {
+            'url': self.SUPABASE_URL,
+            'key': self.SUPABASE_ROLE_KEY or self.SUPABASE_KEY,
+        }
+
     def get_postgres_config(self):
-        """Obtener configuración de PostgreSQL como diccionario"""
+        """
+        OBSOLETO: configuración del PostgreSQL local (legacy muerto).
+
+        La capa de datos usa exclusivamente el cliente REST de Supabase, y este
+        diccionario NO contiene 'url' ni 'key', por lo que `PostgresManager`
+        acabaría dependiendo de os.environ por efecto colateral de load_dotenv.
+        Usa `get_supabase_config()` en su lugar.
+
+        Se mantiene solo por compatibilidad con código antiguo.
+        """
         return {
             'host': self.DB_HOST,
             'port': self.DB_PORT,

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QSpinBox,
     QHeaderView, QSizePolicy, QPushButton,
     QDialog, QLabel, QTextEdit,
-    QFrame, QLineEdit
+    QFrame, QLineEdit, QComboBox
 )
 from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from PySide6.QtGui import QFont, QCursor, QDoubleValidator
@@ -36,8 +36,11 @@ from ui.components import (
 )
 
 # Importar gestores de impresión
-from escpos_printer import TicketPrinter
-from windows_printer_manager import TicketPrinterWindows, WindowsPrinterManager
+from services.printing.windows_printer_manager import (
+    TicketPrinterWindows,
+    WindowsPrinterManager,
+    generar_ticket_venta,
+)
 
 
 class NuevaVentaWindow(QWidget):
@@ -59,6 +62,7 @@ class NuevaVentaWindow(QWidget):
         # Variables de venta
         self.carrito = []
         self.total_venta = 0.0
+        self.metodo_pago_seleccionado = 'efectivo'
         
         # Timer para detectar entrada del escáner
         self.scanner_timer = QTimer()
@@ -725,20 +729,28 @@ class NuevaVentaWindow(QWidget):
         # Crear diálogo de confirmación
         dialog = ConfirmacionVentaDialog(self.carrito, self.total_venta, self)
         if dialog.exec() == QDialog.Accepted:
-            self.procesar_venta()
+            self.metodo_pago_seleccionado = dialog.get_metodo_pago()
+            self.procesar_venta(self.metodo_pago_seleccionado)
             
-    def procesar_venta(self):
+    def procesar_venta(self, metodo_pago='efectivo'):
         """Procesar la venta"""
+        # Import local a propósito: evita tocar el bloque de imports del módulo.
+        from database.postgres_manager import StockInsuficienteError
+
         try:
             # Doble verificación: asegurarse que el turno sigue abierto
             if not self.verificar_turno_abierto():
                 self.mostrar_dialogo_abrir_turno()
                 return
+
+            metodo_pago = (metodo_pago or 'efectivo').strip().lower()
+            if metodo_pago not in ('efectivo', 'transferencia'):
+                metodo_pago = 'efectivo'
             
             # Crear venta en la base de datos
             venta_data = {
                 'total': self.total_venta,
-                'metodo_pago': 'efectivo',
+                'metodo_pago': metodo_pago,
                 'tipo_venta': 'producto',
                 'productos': self.carrito,
                 'id_usuario': self.user_data['id_usuario'],
@@ -763,7 +775,8 @@ class NuevaVentaWindow(QWidget):
                 self.venta_completada.emit({
                     'id_venta': venta_id,
                     'total': self.total_venta,
-                    'productos': len(self.carrito)
+                    'productos': len(self.carrito),
+                    'metodo_pago': metodo_pago
                 })
                 
                 # Limpiar carrito
@@ -784,10 +797,32 @@ class NuevaVentaWindow(QWidget):
                     # Mantener comportamiento de no precargar catálogo
                     self.mostrar_mensaje_busqueda()
                 
-                logging.info(f"Venta {venta_id} procesada exitosamente: ${self.total_venta:.2f}")
+                logging.info(
+                    f"Venta {venta_id} procesada exitosamente: ${self.total_venta:.2f} | Método: {metodo_pago}"
+                )
             else:
                 show_error_dialog(self, "Error", "No se pudo procesar la venta.")
-            
+
+        except StockInsuficienteError as e:
+            # La capa de datos garantiza que NO se registró ninguna venta:
+            # el cajero no cobra y el carrito se conserva para corregirlo.
+            logging.error(f"[ERROR] Venta rechazada por stock insuficiente: {e}")
+            show_warning_dialog(
+                self,
+                "No se pudo cobrar",
+                f"Solo hay {e.disponible} de \"{e.producto}\".",
+                f"Se intentaron vender {e.solicitado} unidades. "
+                f"La venta NO se registró y no se cobró nada.\n"
+                f"Ajuste la cantidad en el carrito y vuelva a intentar."
+            )
+            # Refrescar la vista de productos para que el cajero vea el stock real.
+            try:
+                if (self.search_bar.text() if hasattr(self, 'search_bar') else "").strip():
+                    self.buscar_productos()
+            except Exception:
+                pass
+            return
+
         except Exception as e:
             logging.error(f"Error procesando venta: {e}")
             show_error_dialog(
@@ -795,7 +830,7 @@ class NuevaVentaWindow(QWidget):
                 "Error",
                 f"No se pudo procesar la venta: {str(e)}"
             )
-            
+
     def mostrar_ticket(self, venta_id):
         """Mostrar ticket de venta"""
         dialog = TicketVentaDialog(
@@ -803,6 +838,7 @@ class NuevaVentaWindow(QWidget):
             carrito=self.carrito,
             total=self.total_venta,
             usuario=self.user_data.get('nombre_completo', 'Usuario'),
+            metodo_pago=self.metodo_pago_seleccionado,
             parent=self
         )
         dialog.exec()
@@ -815,6 +851,7 @@ class ConfirmacionVentaDialog(QDialog):
         super().__init__(parent)
         self.carrito = carrito
         self.total = total
+        self.metodo_pago = 'efectivo'
         self.setup_ui()
         
     def setup_ui(self):
@@ -982,11 +1019,25 @@ class ConfirmacionVentaDialog(QDialog):
         layout.addWidget(efectivo_frame)
         
         # Método de pago
-        pago_label = QLabel("Método de Pago: EFECTIVO")
+        pago_label = QLabel("Método de Pago")
         pago_label.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, 11))
-        pago_label.setAlignment(Qt.AlignCenter)
-        pago_label.setStyleSheet("color: #666666; padding: 10px;")
+        pago_label.setStyleSheet("color: #666666;")
         layout.addWidget(pago_label)
+
+        self.metodo_combo = QComboBox()
+        self.metodo_combo.setMinimumHeight(44)
+        self.metodo_combo.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, 12))
+        self.metodo_combo.addItem("Efectivo", 'efectivo')
+        self.metodo_combo.addItem("Transferencia", 'transferencia')
+        self.metodo_combo.currentIndexChanged.connect(self.on_metodo_pago_changed)
+        layout.addWidget(self.metodo_combo)
+
+        self.metodo_detalle_label = QLabel("El efectivo recibido permite calcular cambio.")
+        self.metodo_detalle_label.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, 10))
+        self.metodo_detalle_label.setStyleSheet("color: #666666; padding: 2px 0 10px 0;")
+        layout.addWidget(self.metodo_detalle_label)
+
+        self.on_metodo_pago_changed(self.metodo_combo.currentIndex())
         
         # Botones
         buttons_layout = QHBoxLayout()
@@ -1030,6 +1081,26 @@ class ConfirmacionVentaDialog(QDialog):
         buttons_layout.addWidget(btn_confirmar)
         
         layout.addLayout(buttons_layout)
+
+    def on_metodo_pago_changed(self, index):
+        """Actualizar UI según método de pago."""
+        metodo = self.metodo_combo.itemData(index) or 'efectivo'
+        self.metodo_pago = str(metodo).lower()
+
+        if self.metodo_pago == 'transferencia':
+            self.efectivo_input.clear()
+            self.efectivo_input.setEnabled(False)
+            self.cambio_label.setText("Cambio: N/A (Transferencia)")
+            self.cambio_label.setStyleSheet("color: #666; padding: 10px 0; font-weight: bold;")
+            self.metodo_detalle_label.setText("Venta por transferencia: no suma efectivo en caja.")
+        else:
+            self.efectivo_input.setEnabled(True)
+            self.metodo_detalle_label.setText("El efectivo recibido permite calcular cambio.")
+            self.calcular_cambio()
+
+    def get_metodo_pago(self):
+        """Retornar método de pago seleccionado."""
+        return self.metodo_pago
     
     def calcular_cambio(self):
         """Calcular y mostrar el cambio"""
@@ -1060,12 +1131,13 @@ class ConfirmacionVentaDialog(QDialog):
 class TicketVentaDialog(QDialog):
     """Diálogo para mostrar el ticket de venta"""
     
-    def __init__(self, venta_id, carrito, total, usuario, parent=None):
+    def __init__(self, venta_id, carrito, total, usuario, metodo_pago='efectivo', parent=None):
         super().__init__(parent)
         self.venta_id = venta_id
         self.carrito = carrito
         self.total = total
         self.usuario = usuario
+        self.metodo_pago = (metodo_pago or 'efectivo').strip().lower()
         self.setup_ui()
         
     def setup_ui(self):
@@ -1149,43 +1221,39 @@ class TicketVentaDialog(QDialog):
         
         layout.addLayout(buttons_layout)
         
+    def _datos_ticket(self):
+        """Armar el diccionario del ticket (mismo formato para ver e imprimir)."""
+        return {
+            'tienda': 'HTF GIMNASIO',
+            'subtitulo': 'PUNTO DE VENTA',
+            'numero_ticket': self.venta_id,
+            'fecha_hora': datetime.now().strftime("%d/%m/%Y %H:%M"),
+            'cajero': self.usuario,
+            'productos': [
+                {
+                    'nombre': item['nombre'],
+                    'cantidad': item['cantidad'],
+                    'precio': item['precio'],
+                    'subtotal': item['subtotal'],
+                }
+                for item in self.carrito
+            ],
+            'total': self.total,
+            'metodo_pago': self.metodo_pago.upper(),
+            'abrir_caja': self.metodo_pago == 'efectivo',
+            'cortar': True,
+        }
+
     def generar_ticket(self):
-        """Generar el contenido del ticket"""
-        fecha_hora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        
-        ticket = "=" * 42 + "\n"
-        ticket += "           HTF GIMNASIO\n"
-        ticket += "         PUNTO DE VENTA\n"
-        ticket += "=" * 42 + "\n\n"
-        
-        ticket += f"Ticket No.: {self.venta_id:06d}\n"
-        ticket += f"Fecha: {fecha_hora}\n"
-        ticket += f"Cajero: {self.usuario}\n"
-        ticket += "-" * 42 + "\n\n"
-        
-        ticket += "PRODUCTOS:\n"
-        ticket += "-" * 42 + "\n"
-        
-        for item in self.carrito:
-            nombre = item['nombre'][:28]  # Limitar nombre
-            ticket += f"{nombre}\n"
-            ticket += f"  {item['cantidad']} x ${item['precio']:.2f}"
-            ticket += f"{' ' * (30 - len(f'{item['cantidad']} x ${item['precio']:.2f}'))}"
-            ticket += f"${item['subtotal']:.2f}\n"
-            
-        ticket += "-" * 42 + "\n"
-        ticket += f"{'TOTAL:' + ' ' * 28}${self.total:.2f}\n"
-        ticket += "=" * 42 + "\n\n"
-        
-        ticket += "      PAGO EN EFECTIVO\n"
-        ticket += "-" * 42 + "\n\n"
-        
-        ticket += "       ¡Gracias por su compra!\n"
-        ticket += "         Vuelva pronto\n"
-        ticket += "=" * 42 + "\n"
-        
-        return ticket
-        
+        """
+        Generar el contenido del ticket para la vista previa.
+
+        Usa el MISMO generador que la impresión: antes la vista previa se
+        dibujaba a 42 columnas y el papel salía a 30, así que lo que veía el
+        cajero nunca coincidía con lo impreso.
+        """
+        return generar_ticket_venta(self._datos_ticket())
+
     def imprimir_ticket(self):
         """Imprimir el ticket usando impresora del sistema"""
         printer = QPrinter(QPrinter.HighResolution)
@@ -1196,67 +1264,39 @@ class TicketVentaDialog(QDialog):
             show_success_dialog(self, "Éxito", "Ticket impreso correctamente.")
     
     def imprimir_ticket_escpos(self):
-        """Imprimir el ticket en impresora térmica o Windows"""
+        """Imprimir el ticket directamente en Generic / Text Only"""
         try:
-            # Preparar datos del ticket
-            productos_formateados = []
-            for item in self.carrito:
-                productos_formateados.append({
-                    'nombre': item['nombre'],
-                    'cantidad': item['cantidad'],
-                    'precio': item['precio'],
-                    'subtotal': item['subtotal']
-                })
-            
-            datos_ticket = {
-                'tienda': 'HTF GIMNASIO',
-                'subtitulo': 'PUNTO DE VENTA',
-                'numero_ticket': self.venta_id,
-                'fecha_hora': datetime.now().strftime("%d/%m/%Y %H:%M"),
-                'cajero': self.usuario,
-                'productos': productos_formateados,
-                'total': self.total,
-                'metodo_pago': 'EFECTIVO',
-                'abrir_caja': True,
-                'cortar': True
-            }
-            
-            # OPCIÓN 1: Intentar con Windows Generic/Text Only
-            logging.info("Intentando impresión con Windows Generic/Text Only...")
-            nombre_impresora = WindowsPrinterManager.obtener_impresora_por_tipo("Generic")
-            
-            if nombre_impresora:
-                printer_windows = TicketPrinterWindows(nombre_impresora)
-                if printer_windows.conectar():
-                    if printer_windows.imprimir_ticket(datos_ticket):
-                        show_success_dialog(
-                            self,
-                            "Éxito",
-                            f"Ticket impreso en: {nombre_impresora}"
-                        )
-                        printer_windows.desconectar()
-                        return
-                    printer_windows.desconectar()
-            
-            # OPCIÓN 2: Intentar con impresora ESC/POS serial
-            logging.info("Intentando impresión ESC/POS...")
-            puerto = "COM3"
-            
-            printer_escpos = TicketPrinter(puerto)
-            
-            if printer_escpos.conectar():
-                if printer_escpos.imprimir_ticket(datos_ticket):
-                    show_success_dialog(
-                        self,
-                        "Éxito",
-                        "Ticket impreso en la impresora térmica.\n"
-                        "Caja registradora abierta."
-                    )
-                    printer_escpos.desconectar()
-                    return
-                printer_escpos.desconectar()
-            
-            # Si llegamos aquí, ambas fallaron
+            datos_ticket = self._datos_ticket()
+
+            # Resuelve el nombre real de la impresora: tolera variantes como
+            # "Generic / Text Only :)" y respeta TICKET_IMPRESORA del .env.
+            nombre_impresora = WindowsPrinterManager.resolver_impresora()
+            if not nombre_impresora:
+                show_error_dialog(
+                    self,
+                    "Impresora no encontrada",
+                    "No se encontró la impresora de tickets.",
+                    "Instaladas: "
+                    + ", ".join(WindowsPrinterManager.obtener_impresoras_instaladas())
+                    + "\n\nConfigura TICKET_IMPRESORA en el archivo .env con el "
+                      "nombre exacto de la impresora."
+                )
+                return
+
+            logging.info(f"Impresión directa por Windows: {nombre_impresora}")
+
+            printer_windows = TicketPrinterWindows(nombre_impresora)
+            if printer_windows.conectar() and printer_windows.imprimir_ticket(datos_ticket):
+                show_success_dialog(
+                    self,
+                    "Éxito",
+                    "Ticket impreso en Generic / Text Only."
+                )
+                printer_windows.desconectar()
+                return
+
+            printer_windows.desconectar()
+
             show_error_dialog(
                 self,
                 "Error de Impresión",
@@ -1264,7 +1304,7 @@ class TicketVentaDialog(QDialog):
                 "Verifica que:\n"
                 "- La impresora esté conectada\n"
                 "- Los drivers estén instalados\n"
-                "- Intenta reconectar la impresora\n\n"
+                "- Existe la impresora 'Generic / Text Only' en Windows\n\n"
                 "Alternativa: Usa 'Imprimir Sistema'"
             )
             

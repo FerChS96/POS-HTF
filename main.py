@@ -7,12 +7,62 @@ Usando PySide6 para la interfaz
 import sys
 import os
 import logging
+import ctypes
 
 # CONFIGURACIÓN DE LOGGING ANTES DE CUALQUIER OTRO IMPORT
+import io
+
 _handlers = []
+
+# Configurar StreamHandler con encoding UTF-8 seguro
 _console_stream = getattr(sys, 'stdout', None)
 if _console_stream is not None:
-    _handlers.append(logging.StreamHandler(_console_stream))
+    # Envolver stdout con TextIOWrapper UTF-8 para manejar caracteres especiales
+    try:
+        if hasattr(_console_stream, 'buffer'):
+            # Si tiene buffer, envolver con UTF-8 y errors='replace'
+            wrapped_stream = io.TextIOWrapper(
+                _console_stream.buffer,
+                encoding='utf-8',
+                errors='replace',
+                line_buffering=True
+            )
+            console_handler = logging.StreamHandler(wrapped_stream)
+        else:
+            # Si no tiene buffer, usar stream directo con handler que ignore errores
+            console_handler = logging.StreamHandler(_console_stream)
+            
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        _handlers.append(console_handler)
+    except Exception as e:
+        # Si falla la configuración avanzada, continuar sin console handler
+        print(f"Advertencia: No se pudo configurar console logging: {e}")
+        pass
+
+# Agregar logging a archivo para depuración (especialmente útil con --windowed)
+try:
+    # Detectar si está ejecutándose como ejecutable empaquetado
+    if getattr(sys, 'frozen', False):
+        # Si está empaquetado, usar directorio del .exe
+        app_dir = os.path.dirname(sys.executable)
+    else:
+        # Si es script Python normal, usar directorio del script
+        app_dir = os.path.dirname(__file__)
+    
+    # Mantener .log histórico y también .txt para soporte/diagnóstico en sitio
+    log_files = [
+        os.path.join(app_dir, 'pos_htf.log'),
+        os.path.join(app_dir, 'pos_htf.txt'),
+    ]
+
+    for log_file in log_files:
+        file_handler = logging.FileHandler(log_file, encoding='utf-8', mode='a', errors='replace')
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        _handlers.append(file_handler)
+except Exception as e:
+    print(f"No se pudo crear archivo de log: {e}")
 
 # Configurar logging básico
 logging.basicConfig(
@@ -58,6 +108,49 @@ def _ensure_utf8_stdio_windows() -> None:
 
 _ensure_utf8_stdio_windows()
 
+
+_single_instance_mutex = None
+
+
+def _acquire_single_instance_lock() -> bool:
+    """Evitar múltiples instancias del POS en Windows."""
+    global _single_instance_mutex
+
+    if sys.platform != "win32":
+        return True
+
+    mutex_name = "Global\\HTF_Gimnasio_POS_SingleInstance"
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(None, False, mutex_name)
+
+    if not mutex:
+        return True
+
+    last_error = kernel32.GetLastError()
+    ERROR_ALREADY_EXISTS = 183
+    if last_error == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(mutex)
+        return False
+
+    _single_instance_mutex = mutex
+    return True
+
+
+def _release_single_instance_lock() -> None:
+    """Liberar mutex de instancia única al salir."""
+    global _single_instance_mutex
+
+    if sys.platform != "win32":
+        return
+
+    if _single_instance_mutex:
+        try:
+            ctypes.windll.kernel32.CloseHandle(_single_instance_mutex)
+        except Exception:
+            pass
+        finally:
+            _single_instance_mutex = None
+
 try:
     from ui.login_window_pyside import LoginWindow
     from ui.main_pos_window import MainPOSWindow
@@ -66,6 +159,8 @@ try:
     from services.supabase_service import SupabaseService
     from utils.config import Config
     from ui.components import show_warning_dialog, show_confirmation_dialog
+    # Importar servidor FastAPI para que PyInstaller lo detecte
+    from utils.fastapi_server_entradas import FastAPIServerThread, get_entrada_queue
 except ImportError as e:
     logging.error(f"Error importando módulos: {e}")
     # Mostrar error al usuario si es GUI
@@ -87,10 +182,33 @@ class POSApplication:
             
             # Inicializar configuración
             self.config = Config()
-            
+
+            # Validar credenciales ANTES de intentar conectar: sin Supabase la
+            # aplicación no puede operar (no existe un modo offline real).
+            if not self.config.validate_config():
+                faltantes = self.config.get_missing_credentials()
+                lista_faltantes = "\n".join(f"  - {v}" for v in faltantes)
+                mensaje = (
+                    "No se encontraron las credenciales de Supabase.\n\n"
+                    "Faltan estas variables:\n"
+                    f"{lista_faltantes}\n\n"
+                    "Configúralas en el archivo:\n"
+                    f"{os.path.abspath(os.path.join(os.path.dirname(__file__), '.env'))}\n\n"
+                    "Ejemplo:\n"
+                    "  SUPABASE_URL=https://xxxxx.supabase.co\n"
+                    "  SUPABASE_ROLE_KEY=eyJhbGciOiJIUzI1NiIs...\n\n"
+                    "La aplicación no puede continuar sin estas credenciales."
+                )
+                logging.error(f"[ERROR] Credenciales faltantes: {', '.join(faltantes)}")
+                QMessageBox.critical(None, "Configuración incompleta", mensaje)
+                sys.exit(1)
+
             # Inicializar servicios
             try:
-                db_config = self.config.get_postgres_config()
+                # Se pasa explícitamente {'url', 'key'}: es lo que PostgresManager
+                # lee. Antes se pasaba get_postgres_config() (sin 'url'/'key') y
+                # solo funcionaba por el efecto colateral de load_dotenv().
+                db_config = self.config.get_supabase_config()
                 self.postgres_manager = PostgresManager(db_config)
                 if not self.postgres_manager.initialize_database():
                     logging.warning("Advertencia: BD no disponible, continuando en modo offline")
@@ -275,5 +393,20 @@ class POSApplication:
             logging.shutdown()
 
 if __name__ == "__main__":
-    app = POSApplication()
-    sys.exit(app.run())
+    if not _acquire_single_instance_lock():
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "El POS HTF ya está ejecutándose en esta máquina.",
+                "HTF Gimnasio POS",
+                0x00000030
+            )
+        except Exception:
+            pass
+        sys.exit(1)
+
+    try:
+        app = POSApplication()
+        sys.exit(app.run())
+    finally:
+        _release_single_instance_lock()

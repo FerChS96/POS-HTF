@@ -28,6 +28,24 @@ logging.basicConfig(
 )
 
 
+class StockInsuficienteError(Exception):
+    """
+    La venta no se puede cobrar porque un producto no tiene stock suficiente.
+
+    Se lanza ANTES de escribir nada (o tras revertir lo escrito), de modo que
+    al recibirla se garantiza que NO quedó ninguna venta registrada.
+    """
+
+    def __init__(self, producto: str, solicitado: int, disponible: int):
+        self.producto = producto
+        self.solicitado = int(solicitado)
+        self.disponible = int(disponible)
+        super().__init__(
+            f'Stock insuficiente para "{producto}": '
+            f'se pidieron {self.solicitado} y solo hay {self.disponible}.'
+        )
+
+
 class PostgresManager:
     """Gestor de conexión y operaciones con Supabase"""
     
@@ -52,6 +70,7 @@ class PostgresManager:
         self.client: Optional[Client] = None
         self.supabase_key = None  # Almacenar la key para llamadas HTTP
         self.is_connected = False
+        self._missing_suplementos_logged = False
         self.connect()
     
     def connect(self):
@@ -266,6 +285,27 @@ class PostgresManager:
     
     # ========== PRODUCTOS ==========
 
+    def _is_missing_table_error(self, error: Exception, table_name: str) -> bool:
+        """Detectar error de PostgREST cuando una tabla no existe en schema cache."""
+        text = str(error).lower()
+        return (
+            f"public.{table_name}" in text
+            and ("schema cache" in text or "pgrst205" in text)
+        )
+
+    def _run_optional_suplementos_query(self, query_callable) -> List[Dict]:
+        """Ejecutar query a ca_suplementos; si no existe, regresar lista vacía."""
+        try:
+            response = query_callable()
+            return response.data or []
+        except Exception as e:
+            if self._is_missing_table_error(e, 'ca_suplementos'):
+                if not self._missing_suplementos_logged:
+                    logging.warning("Tabla 'ca_suplementos' no existe; se omiten suplementos en consultas.")
+                    self._missing_suplementos_logged = True
+                return []
+            raise
+
     def _fetch_inventario_map(self, codigos_internos: List[str], tipo_producto: str, *, chunk_size: int = 200) -> Dict[str, Dict]:
         """Traer inventario por lote y devolver un mapa codigo_interno -> inventario.
 
@@ -306,13 +346,14 @@ class PostgresManager:
                 'id_producto, codigo_interno, nombre, precio_venta, categoria, codigo_barras'
             ).eq('activo', True).execute()
             
-            # Obtener suplementos
-            response_suplementos = self.client.table('ca_suplementos').select(
-                'id_suplemento, codigo_interno, nombre, precio_venta, tipo, codigo_barras'
-            ).eq('activo', True).execute()
+            # Obtener suplementos (opcional)
+            suplementos_data = self._run_optional_suplementos_query(
+                lambda: self.client.table('ca_suplementos').select(
+                    'id_suplemento, codigo_interno, nombre, precio_venta, tipo, codigo_barras'
+                ).eq('activo', True).execute()
+            )
 
             varios_data = response_varios.data or []
-            suplementos_data = response_suplementos.data or []
 
             inv_varios_map = self._fetch_inventario_map(
                 [p.get('codigo_interno') for p in varios_data],
@@ -390,15 +431,16 @@ class PostgresManager:
                 f"nombre.ilike.{search_pattern},codigo_barras.ilike.{search_pattern},codigo_interno.ilike.{search_pattern}"
             ).eq('activo', True).execute()
             
-            # Buscar en suplementos
-            response_suplementos = self.client.table('ca_suplementos').select(
-                'id_suplemento, codigo_interno, nombre, precio_venta, tipo, codigo_barras'
-            ).or_(
-                f"nombre.ilike.{search_pattern},codigo_barras.ilike.{search_pattern},codigo_interno.ilike.{search_pattern}"
-            ).eq('activo', True).execute()
+            # Buscar en suplementos (opcional)
+            suplementos_data = self._run_optional_suplementos_query(
+                lambda: self.client.table('ca_suplementos').select(
+                    'id_suplemento, codigo_interno, nombre, precio_venta, tipo, codigo_barras'
+                ).or_(
+                    f"nombre.ilike.{search_pattern},codigo_barras.ilike.{search_pattern},codigo_interno.ilike.{search_pattern}"
+                ).eq('activo', True).execute()
+            )
 
             varios_data = response_varios.data or []
-            suplementos_data = response_suplementos.data or []
 
             inv_varios_map = self._fetch_inventario_map(
                 [p.get('codigo_interno') for p in varios_data],
@@ -512,15 +554,16 @@ class PostgresManager:
                     'id_ubicacion': id_ubicacion
                 }
             
-            # Buscar en suplementos
             tiempo_suplementos = time.perf_counter()
-            response_suplementos = self.client.table('ca_suplementos').select(
-                'id_suplemento, codigo_interno, nombre, precio_venta, tipo, codigo_barras'
-            ).eq('codigo_barras', barcode).eq('activo', True).execute()
+            suplementos_data = self._run_optional_suplementos_query(
+                lambda: self.client.table('ca_suplementos').select(
+                    'id_suplemento, codigo_interno, nombre, precio_venta, tipo, codigo_barras'
+                ).eq('codigo_barras', barcode).eq('activo', True).execute()
+            )
             tiempo_suplementos_ms = (time.perf_counter() - tiempo_suplementos) * 1000
             
-            if response_suplementos.data:
-                prod_suplemento = response_suplementos.data[0]
+            if suplementos_data:
+                prod_suplemento = suplementos_data[0]
                 codigo_interno = prod_suplemento.get('codigo_interno')
                 
                 # Obtener stock del inventario
@@ -576,11 +619,13 @@ class PostgresManager:
             if response_varios.data:
                 return response_varios.data[0]
             
-            # Buscar en suplementos
-            response_suplementos = self.client.table('ca_suplementos').select('*').eq('codigo_interno', code).eq('activo', True).execute()
-            
-            if response_suplementos.data:
-                return response_suplementos.data[0]
+            # Buscar en suplementos (opcional)
+            suplementos_data = self._run_optional_suplementos_query(
+                lambda: self.client.table('ca_suplementos').select('*').eq('codigo_interno', code).eq('activo', True).execute()
+            )
+
+            if suplementos_data:
+                return suplementos_data[0]
             
             logging.warning(f"Producto con código interno {code} no encontrado")
             return None
@@ -612,13 +657,15 @@ class PostgresManager:
                 producto = response_varios.data[0]
                 tipo_producto = 'varios'
             else:
-                # Buscar en suplementos
-                response_suplementos = self.client.table('ca_suplementos').select(
-                    'codigo_interno, nombre, precio_venta, tipo, codigo_barras'
-                ).eq('codigo_interno', codigo_interno).eq('activo', True).execute()
-                
-                if response_suplementos.data:
-                    producto = response_suplementos.data[0]
+                # Buscar en suplementos (opcional)
+                suplementos_data = self._run_optional_suplementos_query(
+                    lambda: self.client.table('ca_suplementos').select(
+                        'codigo_interno, nombre, precio_venta, tipo, codigo_barras'
+                    ).eq('codigo_interno', codigo_interno).eq('activo', True).execute()
+                )
+
+                if suplementos_data:
+                    producto = suplementos_data[0]
                     tipo_producto = 'suplemento'
                 else:
                     logging.warning(f"Producto con código interno {codigo_interno} no encontrado")
@@ -665,100 +712,573 @@ class PostgresManager:
     
     # ========== VENTAS ==========
     
+    # Nombre de la función transaccional en Postgres.
+    # Ver migrations/001_crear_venta_pos.sql (el usuario la aplica a mano).
+    RPC_CREAR_VENTA = 'crear_venta_pos'
+
+    # Reintentos del descuento condicionado de stock en el camino de respaldo.
+    REINTENTOS_STOCK = 4
+
+    @staticmethod
+    def _rpc_no_existe(error: Exception) -> bool:
+        """
+        ¿El error significa "la función todavía no está en la base"?
+
+        PostgREST responde PGRST202 y un mensaje con "schema cache" cuando se
+        invoca un RPC inexistente. Eso NO es un fallo de la venta: es la señal
+        para caer al camino Python de respaldo.
+        """
+        texto = str(error).lower()
+        return (
+            'pgrst202' in texto
+            or 'schema cache' in texto
+            or 'could not find the function' in texto
+        )
+
+    @staticmethod
+    def _error_es_de_stock(error: Exception) -> bool:
+        """El error proveniente de Postgres corresponde a falta de stock."""
+        texto = str(error).lower()
+        return (
+            'stock insuficiente' in texto
+            or 'inventario_stock_actual_check' in texto
+        )
+
+    def _normalizar_items_venta(self, venta_data: Dict) -> List[Dict]:
+        """
+        Normaliza el carrito de la UI a la forma que usan ambos caminos.
+
+        El carrito trae {id_producto, codigo_interno, nombre, precio, cantidad,
+        subtotal}; aquí se convierte a nombres de columna de detalles_venta.
+        """
+        items = []
+        for item in (venta_data.get('productos') or []):
+            cantidad = int(item.get('cantidad') or 0)
+            if cantidad <= 0:
+                raise ValueError(
+                    f"Cantidad inválida ({cantidad}) para el producto "
+                    f"{item.get('nombre') or item.get('id_producto')}"
+                )
+
+            precio = float(item.get('precio', item.get('precio_unitario', 0)) or 0)
+            subtotal = item.get('subtotal', item.get('subtotal_linea'))
+            subtotal = float(subtotal) if subtotal is not None else precio * cantidad
+
+            items.append({
+                'id_producto': item.get('id_producto'),
+                'codigo_interno': (item.get('codigo_interno') or None),
+                'tipo_producto': (item.get('tipo_producto') or 'varios'),
+                'cantidad': cantidad,
+                'precio_unitario': precio,
+                'subtotal_linea': subtotal,
+                'descuento_linea': float(item.get('descuento_linea') or 0),
+            })
+
+        if not items:
+            raise ValueError("La venta no tiene productos: no hay nada que cobrar.")
+
+        return items
+
     def create_sale(self, venta_data: Dict) -> Optional[int]:
-        """Crear nueva venta"""
+        """
+        Crear nueva venta de forma ATÓMICA.
+
+        Dos caminos:
+          1) RPC `crear_venta_pos` (una transacción real en Postgres). Es el
+             camino correcto; requiere aplicar migrations/001_crear_venta_pos.sql.
+          2) Si la función aún no existe (PostgREST: PGRST202 / "schema cache"),
+             camino Python endurecido: valida TODO el stock antes de insertar
+             nada y, si algo falla después, revierte con borrados compensatorios.
+
+        Garantías (en ambos caminos):
+          - Si falta stock, NO se registra ninguna venta y se lanza
+            StockInsuficienteError.
+          - NUNCA se devuelve un id de venta si la venta quedó incompleta.
+
+        Raises:
+            StockInsuficienteError: algún producto no alcanza (nada se cobró).
+            Exception: cualquier otro fallo; la venta no quedó registrada.
+        """
+        if not self.is_connected:
+            self.connect()
+
+        items = self._normalizar_items_venta(venta_data)
+
+        # ---- Camino 1: RPC transaccional -----------------------------------
+        # No se cachea la ausencia del RPC a propósito: así el POS empieza a
+        # usar la transacción en cuanto el usuario aplique la migración, sin
+        # tener que reiniciar la aplicación. Cuesta 1 round-trip por venta.
         try:
-            if not self.is_connected:
-                self.connect()
-            
-            # Calcular totales
-            subtotal = venta_data['total']
-            descuento = venta_data.get('descuento', 0)
-            impuestos = venta_data.get('impuestos', 0)
-            
-            # Preparar datos de venta
-            venta_insert = {
-                'id_usuario': venta_data['id_usuario'],
-                'id_miembro': venta_data.get('id_miembro'),
-                'id_turno': venta_data.get('id_turno'),  # Agregar ID del turno
-                'fecha': venta_data.get('fecha', datetime.now().isoformat()),
-                'subtotal': float(subtotal),
-                'descuento': float(descuento),
-                'impuestos': float(impuestos),
-                'total': float(venta_data['total']),
-                'metodo_pago': venta_data.get('metodo_pago', 'efectivo'),
-                'tipo_venta': venta_data.get('tipo_venta', 'producto'),
-                'estado': 'completada'
-            }
-            
-            # Insertar venta
-            response = self.client.table('ventas').insert(venta_insert).execute()
-            
-            if not response.data:
-                logging.error("Error insertando venta")
-                return None
-            
-            venta_id = response.data[0]['id_venta']
-            
-            # Insertar detalles y actualizar stock
-            for item in venta_data.get('productos', []):
-                # Obtener información del producto
-                producto_response = self.client.table('ca_productos_varios').select('codigo_interno, nombre, descripcion').eq('id_producto', item['id_producto']).execute()
-                
-                if not producto_response.data:
-                    logging.error(f"Producto {item['id_producto']} no encontrado")
-                    continue
-                
-                producto_info = producto_response.data[0]
-                codigo_interno = producto_info['codigo_interno']
-                
-                # Verificar stock
-                stock_response = self.client.table('inventario').select('stock_actual').eq('codigo_interno', codigo_interno).eq('tipo_producto', 'varios').execute()
-                
-                if not stock_response.data or stock_response.data[0]['stock_actual'] < item['cantidad']:
-                    logging.error(f"Stock insuficiente para {producto_info['nombre']}")
-                    continue
-                
-                # Insertar detalle
-                detalle_data = {
-                    'id_venta': venta_id,
-                    'codigo_interno': codigo_interno,
-                    'tipo_producto': 'varios',
-                    'cantidad': item['cantidad'],
-                    'precio_unitario': float(item['precio']),
-                    'subtotal_linea': float(item['subtotal']),
-                    'nombre_producto': producto_info['nombre'],
-                    'descripcion_producto': producto_info.get('descripcion')
-                }
-                
-                self.client.table('detalles_venta').insert(detalle_data).execute()
-                
-                # Actualizar stock
-                stock_anterior = stock_response.data[0]['stock_actual']
-                stock_nuevo = stock_anterior - item['cantidad']
-                
-                self.client.table('inventario').update({'stock_actual': stock_nuevo}).eq('codigo_interno', codigo_interno).eq('tipo_producto', 'varios').execute()
-                
-                # Registrar movimiento
-                movimiento_data = {
-                    'codigo_interno': codigo_interno,
-                    'tipo_producto': 'varios',
+            return self._crear_venta_rpc(venta_data, items)
+        except StockInsuficienteError:
+            raise
+        except Exception as e:
+            if not self._rpc_no_existe(e):
+                logging.error(f"[ERROR] Falló el RPC {self.RPC_CREAR_VENTA}: {e}")
+                raise
+            logging.info(
+                f"RPC {self.RPC_CREAR_VENTA} no disponible en la base "
+                f"(falta aplicar migrations/001_crear_venta_pos.sql). "
+                f"Usando camino de respaldo en Python."
+            )
+
+        # ---- Camino 2: respaldo en Python ----------------------------------
+        return self._crear_venta_respaldo(venta_data, items)
+
+    def _crear_venta_rpc(self, venta_data: Dict, items: List[Dict]) -> int:
+        """Crea la venta con la función transaccional de Postgres."""
+        total = float(venta_data['total'])
+        params = {
+            'p_id_usuario': venta_data['id_usuario'],
+            'p_items': items,
+            'p_total': total,
+            'p_subtotal': float(venta_data.get('subtotal', total) or total),
+            'p_descuento': float(venta_data.get('descuento', 0) or 0),
+            'p_impuestos': float(venta_data.get('impuestos', 0) or 0),
+            'p_id_miembro': venta_data.get('id_miembro'),
+            'p_id_turno': venta_data.get('id_turno'),
+            'p_metodo_pago': venta_data.get('metodo_pago', 'efectivo'),
+            'p_tipo_venta': venta_data.get('tipo_venta', 'producto'),
+            'p_referencia_pago': venta_data.get('referencia_pago'),
+            'p_notas': venta_data.get('notas'),
+            'p_fecha': venta_data.get('fecha'),
+        }
+
+        try:
+            respuesta = self.client.rpc(self.RPC_CREAR_VENTA, params).execute()
+        except Exception as e:
+            if self._rpc_no_existe(e):
+                raise
+            if self._error_es_de_stock(e):
+                # La transacción ya revirtió TODO del lado de Postgres.
+                producto, solicitado, disponible = self._leer_datos_de_stock(str(e), items)
+                raise StockInsuficienteError(producto, solicitado, disponible) from e
+            raise
+
+        venta_id = self._extraer_id_venta(respuesta.data)
+        if not venta_id:
+            raise RuntimeError(
+                f"El RPC {self.RPC_CREAR_VENTA} no devolvió un id_venta válido: "
+                f"{respuesta.data!r}"
+            )
+
+        logging.info(
+            f"[OK] Venta creada por RPC transaccional: ID {venta_id}, "
+            f"Total: ${float(venta_data['total']):.2f}"
+        )
+        return venta_id
+
+    @staticmethod
+    def _extraer_id_venta(datos: Any) -> Optional[int]:
+        """El RPC puede devolver un escalar, una lista o un dict según PostgREST."""
+        if datos is None:
+            return None
+        if isinstance(datos, list):
+            datos = datos[0] if datos else None
+        if isinstance(datos, dict):
+            datos = datos.get('id_venta', datos.get('crear_venta_pos'))
+        if datos is None:
+            return None
+        try:
+            return int(datos)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _leer_datos_de_stock(mensaje: str, items: List[Dict]) -> tuple:
+        """
+        Extrae del mensaje de Postgres el nombre del producto para el diálogo.
+        Si no se puede, cae a un texto genérico: el error igual es legible.
+        """
+        import re
+        coincidencia = re.search(
+            r'Stock insuficiente para "(.+?)": se pidieron (\d+) y solo hay (\d+)',
+            mensaje
+        )
+        if coincidencia:
+            return (
+                coincidencia.group(1),
+                int(coincidencia.group(2)),
+                int(coincidencia.group(3)),
+            )
+        total_pedido = sum(i['cantidad'] for i in items)
+        return ("uno de los productos del carrito", total_pedido, 0)
+
+    def _crear_venta_respaldo(self, venta_data: Dict, items: List[Dict]) -> int:
+        """
+        Camino de respaldo, sin transacciones (REST puro).
+
+        Estrategia:
+          1. Precargar catálogo e inventario en 2 consultas (.in_), no 5 por
+             línea  -> arregla el Bug C.
+          2. Validar TODO el stock ANTES de insertar la venta -> arregla el Bug A.
+          3. Insertar venta, detalles (lote), descontar stock, movimientos (lote).
+          4. Si algo falla después de insertar la venta, revertir stock y borrar
+             detalles, movimientos y la venta, y relanzar.
+        """
+        # ---- 1) Precarga: 2 consultas en total -----------------------------
+        productos_por_id, productos_por_codigo = self._precargar_productos(items)
+
+        for item in items:
+            codigo = item['codigo_interno']
+            if not codigo:
+                producto = productos_por_id.get(item['id_producto'])
+                if not producto:
+                    raise ValueError(
+                        f"Producto no encontrado en el catálogo "
+                        f"(id_producto={item['id_producto']})"
+                    )
+                codigo = producto['codigo_interno']
+                item['codigo_interno'] = codigo
+            else:
+                producto = productos_por_codigo.get(codigo) or {}
+
+            item['nombre_producto'] = producto.get('nombre') or codigo
+            item['descripcion_producto'] = producto.get('descripcion')
+
+        codigos = sorted({item['codigo_interno'] for item in items})
+        inventario_por_clave = self._precargar_inventario(codigos)
+
+        # ---- 2) Validación total de stock ANTES de escribir nada -----------
+        # Se agrupa por producto: si el mismo artículo viene en dos líneas,
+        # cuenta la suma, no cada línea por separado.
+        pedido_por_clave: Dict[tuple, int] = {}
+        for item in items:
+            clave = (item['codigo_interno'], item['tipo_producto'])
+            pedido_por_clave[clave] = pedido_por_clave.get(clave, 0) + item['cantidad']
+
+        for item in items:
+            clave = (item['codigo_interno'], item['tipo_producto'])
+            registro = inventario_por_clave.get(clave)
+            disponible = int(registro.get('stock_actual') or 0) if registro else 0
+            solicitado = pedido_por_clave[clave]
+            if disponible < solicitado:
+                logging.error(
+                    f"[ERROR] Venta rechazada: stock insuficiente para "
+                    f"{item['nombre_producto']} (pedido {solicitado}, "
+                    f"disponible {disponible}). No se registró nada."
+                )
+                raise StockInsuficienteError(
+                    item['nombre_producto'], solicitado, disponible
+                )
+
+        # ---- 3) Escritura --------------------------------------------------
+        total = float(venta_data['total'])
+        venta_insert = {
+            'id_usuario': venta_data['id_usuario'],
+            'id_miembro': venta_data.get('id_miembro'),
+            'id_turno': venta_data.get('id_turno'),
+            'fecha': venta_data.get('fecha') or datetime.now().isoformat(),
+            'subtotal': float(venta_data.get('subtotal', total) or total),
+            'descuento': float(venta_data.get('descuento', 0) or 0),
+            'impuestos': float(venta_data.get('impuestos', 0) or 0),
+            'total': total,
+            'metodo_pago': venta_data.get('metodo_pago', 'efectivo'),
+            'tipo_venta': venta_data.get('tipo_venta', 'producto'),
+            'estado': 'completada',
+        }
+
+        respuesta = self.client.table('ventas').insert(venta_insert).execute()
+        if not respuesta.data:
+            raise RuntimeError("No se pudo insertar la cabecera de la venta.")
+
+        venta_id = respuesta.data[0]['id_venta']
+        descontados = []  # [(codigo, tipo, cantidad)] ya aplicados, para revertir
+
+        try:
+            # Detalles en UN solo insert por lote.
+            detalles = [{
+                'id_venta': venta_id,
+                'codigo_interno': item['codigo_interno'],
+                'tipo_producto': item['tipo_producto'],
+                'cantidad': item['cantidad'],
+                'precio_unitario': item['precio_unitario'],
+                'subtotal_linea': item['subtotal_linea'],
+                'descuento_linea': item['descuento_linea'],
+                'nombre_producto': item['nombre_producto'],
+                'descripcion_producto': item['descripcion_producto'],
+            } for item in items]
+            self.client.table('detalles_venta').insert(detalles).execute()
+
+            # Descuento de stock, agrupado por producto.
+            movimientos = []
+            for (codigo, tipo), cantidad in pedido_por_clave.items():
+                registro = inventario_por_clave[(codigo, tipo)]
+                nombre = next(
+                    i['nombre_producto'] for i in items
+                    if i['codigo_interno'] == codigo and i['tipo_producto'] == tipo
+                )
+                stock_anterior, stock_nuevo = self._descontar_stock_condicional(
+                    codigo, tipo, cantidad,
+                    int(registro.get('stock_actual') or 0), nombre
+                )
+                descontados.append((codigo, tipo, cantidad))
+                movimientos.append({
+                    'codigo_interno': codigo,
+                    'tipo_producto': tipo,
                     'tipo_movimiento': 'venta',
-                    'cantidad': -item['cantidad'],
+                    'cantidad': -cantidad,
                     'stock_anterior': stock_anterior,
                     'stock_nuevo': stock_nuevo,
                     'id_usuario': venta_data['id_usuario'],
-                    'id_venta': venta_id
-                }
-                
-                self.client.table('movimientos_inventario').insert(movimiento_data).execute()
-            
-            logging.info(f"✅ Venta creada: ID {venta_id}, Total: ${venta_data['total']:.2f}")
-            return venta_id
-            
+                    'id_venta': venta_id,
+                    'motivo': f"Venta POS #{venta_id}",
+                })
+
+            # Movimientos en UN solo insert por lote.
+            self.client.table('movimientos_inventario').insert(movimientos).execute()
+
         except Exception as e:
-            logging.error(f"Error creando venta: {e}")
+            logging.error(
+                f"[ERROR] Falló la venta {venta_id} a medio camino: {e}. "
+                f"Revirtiendo..."
+            )
+            self._revertir_venta_parcial(venta_id, descontados)
             raise
+
+        logging.info(
+            f"[OK] Venta creada (camino de respaldo): ID {venta_id}, "
+            f"Total: ${total:.2f}"
+        )
+        return venta_id
+
+    def _precargar_productos(self, items: List[Dict]) -> tuple:
+        """Una consulta con .in_() en vez de una por producto (Bug C)."""
+        por_id: Dict[Any, Dict] = {}
+        por_codigo: Dict[str, Dict] = {}
+
+        ids = sorted({
+            i['id_producto'] for i in items
+            if i['id_producto'] is not None and not i['codigo_interno']
+        })
+        codigos = sorted({i['codigo_interno'] for i in items if i['codigo_interno']})
+
+        columnas = 'id_producto, codigo_interno, nombre, descripcion'
+
+        if ids:
+            respuesta = self.client.table('ca_productos_varios').select(
+                columnas
+            ).in_('id_producto', ids).execute()
+            for fila in (respuesta.data or []):
+                por_id[fila['id_producto']] = fila
+                por_codigo[fila['codigo_interno']] = fila
+
+        if codigos:
+            respuesta = self.client.table('ca_productos_varios').select(
+                columnas
+            ).in_('codigo_interno', codigos).execute()
+            for fila in (respuesta.data or []):
+                por_id[fila['id_producto']] = fila
+                por_codigo[fila['codigo_interno']] = fila
+
+        return por_id, por_codigo
+
+    def _precargar_inventario(self, codigos: List[str]) -> Dict[tuple, Dict]:
+        """Una sola consulta de inventario para todo el carrito (Bug C)."""
+        if not codigos:
+            return {}
+        respuesta = self.client.table('inventario').select(
+            'id_inventario, codigo_interno, tipo_producto, stock_actual'
+        ).in_('codigo_interno', codigos).execute()
+        return {
+            (fila['codigo_interno'], fila.get('tipo_producto')): fila
+            for fila in (respuesta.data or [])
+        }
+
+    def _descontar_stock_condicional(self, codigo: str, tipo: str, cantidad: int,
+                                     stock_leido: int, nombre: str) -> tuple:
+        """
+        Descuenta stock con un UPDATE condicionado por el valor leído
+        (`.eq('stock_actual', stock_leido)`) y reintenta si no afectó filas.
+
+        MITIGA el Bug B (dos cajas leen 10 y ambas escriben 9): si otra caja
+        movió el stock entre la lectura y la escritura, el update no afecta
+        ninguna fila, se relee y se reintenta.
+
+        OJO: esto es una mitigación, NO una garantía. Sin transacciones sobre
+        REST siempre queda una ventana. La garantía real está en el RPC
+        `crear_venta_pos` (migrations/001_crear_venta_pos.sql), donde el
+        descuento es `stock_actual = stock_actual - X` bajo candado de fila.
+        """
+        stock_actual = int(stock_leido)
+
+        for _ in range(self.REINTENTOS_STOCK):
+            if stock_actual < cantidad:
+                raise StockInsuficienteError(nombre, cantidad, stock_actual)
+
+            stock_nuevo = stock_actual - cantidad
+            respuesta = self.client.table('inventario').update(
+                {'stock_actual': stock_nuevo}
+            ).eq('codigo_interno', codigo).eq(
+                'tipo_producto', tipo
+            ).eq('stock_actual', stock_actual).execute()
+
+            if respuesta.data:
+                return stock_actual, stock_nuevo
+
+            # Otra caja ganó la carrera: releer y reintentar.
+            logging.warning(
+                f"Carrera de stock detectada en {codigo}: el valor cambió "
+                f"desde {stock_actual}. Reintentando."
+            )
+            lectura = self.client.table('inventario').select(
+                'stock_actual'
+            ).eq('codigo_interno', codigo).eq(
+                'tipo_producto', tipo
+            ).limit(1).execute()
+
+            if not lectura.data:
+                raise RuntimeError(
+                    f"No existe registro de inventario para {nombre} ({codigo})."
+                )
+            stock_actual = int(lectura.data[0].get('stock_actual') or 0)
+
+        raise RuntimeError(
+            f"No se pudo descontar el stock de {nombre} ({codigo}) tras "
+            f"{self.REINTENTOS_STOCK} intentos por contención entre cajas."
+        )
+
+    def _revertir_venta_parcial(self, venta_id: int, descontados: List[tuple]) -> None:
+        """
+        Rollback compensatorio: deja la base como estaba antes de la venta.
+
+        Orden: primero se devuelve el stock descontado (lo único que afecta al
+        catálogo), luego se borran detalles, movimientos y la venta.
+        Los fallos aquí se registran pero no ocultan el error original.
+        """
+        for codigo, tipo, cantidad in descontados:
+            try:
+                lectura = self.client.table('inventario').select(
+                    'stock_actual'
+                ).eq('codigo_interno', codigo).eq(
+                    'tipo_producto', tipo
+                ).limit(1).execute()
+                if lectura.data:
+                    actual = int(lectura.data[0].get('stock_actual') or 0)
+                    self.client.table('inventario').update(
+                        {'stock_actual': actual + cantidad}
+                    ).eq('codigo_interno', codigo).eq(
+                        'tipo_producto', tipo
+                    ).execute()
+            except Exception as e:
+                logging.error(
+                    f"[ERROR] No se pudo devolver el stock de {codigo} "
+                    f"al revertir la venta {venta_id}: {e}"
+                )
+
+        for tabla in ('detalles_venta', 'movimientos_inventario', 'ventas'):
+            try:
+                self.client.table(tabla).delete().eq('id_venta', venta_id).execute()
+            except Exception as e:
+                logging.error(
+                    f"[ERROR] No se pudo limpiar {tabla} de la venta {venta_id}: {e}. "
+                    f"REVISAR A MANO."
+                )
+
+        logging.info(f"[OK] Venta {venta_id} revertida: no se cobró nada.")
+
+    def cancelar_venta_pos(self, id_venta: int, id_usuario_cancelacion: int, motivo: str = "") -> bool:
+        """Cancelar una venta POS y revertir inventario de sus detalles."""
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            if not id_usuario_cancelacion:
+                logging.error("No se proporcionó usuario para cancelar venta")
+                return False
+
+            venta_response = self.client.table('ventas').select(
+                'id_venta, estado, notas'
+            ).eq('id_venta', id_venta).limit(1).execute()
+
+            if not venta_response.data:
+                logging.warning(f"Venta {id_venta} no encontrada para cancelación")
+                return False
+
+            venta = venta_response.data[0]
+            estado_actual = str(venta.get('estado') or '').lower()
+
+            if estado_actual == 'cancelada':
+                logging.info(f"Venta {id_venta} ya estaba cancelada")
+                return True
+
+            if estado_actual != 'completada':
+                logging.warning(f"Venta {id_venta} no se puede cancelar desde estado: {estado_actual}")
+                return False
+
+            detalles_response = self.client.table('detalles_venta').select(
+                'codigo_interno, tipo_producto, cantidad, nombre_producto'
+            ).eq('id_venta', id_venta).execute()
+
+            detalles = detalles_response.data or []
+
+            for detalle in detalles:
+                codigo_interno = detalle.get('codigo_interno')
+                tipo_producto = detalle.get('tipo_producto')
+                cantidad = int(detalle.get('cantidad') or 0)
+
+                if not codigo_interno or not tipo_producto or cantidad <= 0:
+                    logging.warning(f"Detalle inválido al cancelar venta {id_venta}: {detalle}")
+                    continue
+
+                stock_response = self.client.table('inventario').select(
+                    'stock_actual'
+                ).eq('codigo_interno', codigo_interno).eq('tipo_producto', tipo_producto).limit(1).execute()
+
+                if not stock_response.data:
+                    logging.error(
+                        f"No se encontró inventario para {codigo_interno} ({tipo_producto}) al cancelar venta {id_venta}"
+                    )
+                    return False
+
+                stock_anterior = int(stock_response.data[0].get('stock_actual') or 0)
+                stock_nuevo = stock_anterior + cantidad
+
+                self.client.table('inventario').update(
+                    {'stock_actual': stock_nuevo}
+                ).eq('codigo_interno', codigo_interno).eq('tipo_producto', tipo_producto).execute()
+
+                motivo_movimiento = f"Cancelación venta #{id_venta}"
+                if motivo and motivo.strip():
+                    motivo_movimiento = f"{motivo_movimiento}: {motivo.strip()}"
+
+                movimiento_data = {
+                    'codigo_interno': codigo_interno,
+                    'tipo_producto': tipo_producto,
+                    'tipo_movimiento': 'devolucion',
+                    'cantidad': cantidad,
+                    'stock_anterior': stock_anterior,
+                    'stock_nuevo': stock_nuevo,
+                    'motivo': motivo_movimiento,
+                    'id_usuario': id_usuario_cancelacion,
+                    'id_venta': id_venta
+                }
+
+                if not self.registrar_movimiento_inventario(movimiento_data):
+                    logging.error(f"No se pudo registrar devolución de inventario para venta {id_venta}")
+                    return False
+
+            fecha_cancelacion = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            motivo_limpio = motivo.strip() if motivo and motivo.strip() else "Sin motivo"
+            nota_cancelacion = (
+                f"[Cancelación POS {fecha_cancelacion}] "
+                f"Usuario {id_usuario_cancelacion}. Motivo: {motivo_limpio}"
+            )
+
+            notas_actuales = str(venta.get('notas') or '').strip()
+            notas_nuevas = f"{notas_actuales}\n{nota_cancelacion}".strip() if notas_actuales else nota_cancelacion
+
+            self.client.table('ventas').update({
+                'estado': 'cancelada',
+                'notas': notas_nuevas
+            }).eq('id_venta', id_venta).execute()
+
+            logging.info(f"✅ Venta cancelada exitosamente: {id_venta}")
+            return True
+
+        except Exception as e:
+            logging.error(f"Error cancelando venta POS {id_venta}: {e}")
+            return False
 
     def get_turno_abierto_id(self, id_usuario: int) -> Optional[int]:
         """Obtener el ID del turno abierto del usuario (si existe)."""
@@ -1097,10 +1617,12 @@ class PostgresManager:
             if response_varios.data:
                 return True
             
-            # Buscar en suplementos
-            response_suplementos = self.client.table('ca_suplementos').select('id_suplemento').eq('codigo_interno', codigo_interno).limit(1).execute()
-            
-            if response_suplementos.data:
+            # Buscar en suplementos (opcional)
+            suplementos_data = self._run_optional_suplementos_query(
+                lambda: self.client.table('ca_suplementos').select('id_suplemento').eq('codigo_interno', codigo_interno).limit(1).execute()
+            )
+
+            if suplementos_data:
                 return True
             
             return False
@@ -1162,7 +1684,13 @@ class PostgresManager:
                 'fecha_vencimiento': suplemento_data.get('fecha_vencimiento')
             }
             
-            response = self.client.table('ca_suplementos').insert(suplemento_insert).execute()
+            try:
+                response = self.client.table('ca_suplementos').insert(suplemento_insert).execute()
+            except Exception as e:
+                if self._is_missing_table_error(e, 'ca_suplementos'):
+                    logging.warning("No se puede insertar suplemento: la tabla 'ca_suplementos' no existe.")
+                    return False
+                raise
             
             if response.data:
                 id_suplemento = response.data[0]['id_suplemento']
@@ -1248,15 +1776,17 @@ class PostgresManager:
                 
                 productos_varios_data = {p['codigo_interno']: p for p in (response.data or [])}
             
-            # Obtener detalles de suplementos
+            # Obtener detalles de suplementos (opcional)
             productos_suplementos_data = {}
             if productos_suplementos:
                 codigos_suplementos = [p['codigo_interno'] for p in productos_suplementos]
-                response = self.client.table('ca_suplementos').select(
-                    'codigo_interno, nombre, precio_venta, tipo, codigo_barras'
-                ).in_('codigo_interno', codigos_suplementos).execute()
-                
-                productos_suplementos_data = {p['codigo_interno']: p for p in (response.data or [])}
+                suplementos_rows = self._run_optional_suplementos_query(
+                    lambda: self.client.table('ca_suplementos').select(
+                        'codigo_interno, nombre, precio_venta, tipo, codigo_barras'
+                    ).in_('codigo_interno', codigos_suplementos).execute()
+                )
+
+                productos_suplementos_data = {p['codigo_interno']: p for p in suplementos_rows}
             
             # Combinar datos
             inventario_completo = []
@@ -1474,11 +2004,13 @@ class PostgresManager:
             if codigos_suplementos:
                 try:
                     logging.info(f"📥 Obteniendo {len(codigos_suplementos)} suplementos...")
-                    response_suplementos = self.client.table('ca_suplementos').select(
-                        'codigo_interno, nombre'
-                    ).in_('codigo_interno', list(codigos_suplementos)).execute()
-                    
-                    for prod in (response_suplementos.data or []):
+                    suplementos_rows = self._run_optional_suplementos_query(
+                        lambda: self.client.table('ca_suplementos').select(
+                            'codigo_interno, nombre'
+                        ).in_('codigo_interno', list(codigos_suplementos)).execute()
+                    )
+
+                    for prod in suplementos_rows:
                         productos_suplementos_map[prod['codigo_interno']] = prod['nombre']
                     logging.info(f"✅ Obtenidos {len(productos_suplementos_map)} suplementos")
                 except Exception as e:

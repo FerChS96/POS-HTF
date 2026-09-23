@@ -1,13 +1,35 @@
 # Dependencias del proyecto POS HTF
+# Instalación completa: pip install -r requirements.txt
+# (incluye el servidor FastAPI del Monitor de Entradas; ya no hace falta
+#  instalar requirements_fastapi.txt por separado)
+
+# --- Interfaz gráfica ---
 PySide6>=6.6.0  # Framework de UI moderno con Qt6
 QtAwesome>=1.4.0  # Iconos FontAwesome para Qt
+customtkinter>=5.2.2  # UI alternativa para formularios simples
+
+# --- Configuración y datos ---
 python-dotenv>=1.0.0
 supabase>=2.0.0  # Cliente para sincronización con Supabase
-psycopg2-binary>=2.9.0  # Driver PostgreSQL
+psycopg2-binary>=2.9.0  # Driver PostgreSQL (legacy, ya no se usa en runtime)
 requests>=2.31.0  # HTTP requests para Edge Functions
 pytz>=2023.3  # Zonas horarias para Python
-pyinstaller>=6.0.0  # Para generar ejecutable de Windows
-customtkinter>=5.2.2  # UI alternativa para formularios simples
+bcrypt>=4.0.0  # Hash de contraseñas de usuarios (database/postgres_manager.py)
+
+# --- Servidor FastAPI del Monitor de Entradas ---
+# main.py importa utils.fastapi_server_entradas dentro del try/except ImportError
+# que hace sys.exit(1): sin estos paquetes la aplicación NO ABRE.
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.3
+
+# --- Hardware ---
+pyserial>=3.5  # Impresora térmica ESC/POS (services/printing/escpos_printer.py)
+
+# --- Reportes y Excel ---
 openpyxl>=3.11.0  # Leer y escribir archivos Excel (.xlsx)
 pandas>=2.0.0  # Manipulación de datos (opcional pero útil)
 xlsxwriter>=3.1.2  # Alternativa para crear Excel con formato avanzado
+
+# --- Empaquetado ---
+pyinstaller>=6.0.0  # Para generar ejecutable de Windows
