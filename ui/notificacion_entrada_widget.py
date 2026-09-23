@@ -12,6 +12,7 @@ from PySide6.QtGui import QFont, QPixmap, QPainter, QPainterPath, QColor, QCurso
 import logging
 from datetime import datetime
 import os
+from urllib.parse import urlparse, parse_qs
 
 from ui.components import (
     WindowsPhoneTheme
@@ -238,12 +239,18 @@ class NotificacionEntradaWidget(QDialog):
             logging.error(f"Error procesando ID del miembro: {e}")
             self.agregar_info_row(info_layout, "ID:", "#ERROR")
         
-        # Para uso de beneficios, mostrar el tipo de beneficio
+        # Mostrar área accedida / beneficio utilizado
+        area_accedida = self.miembro_data.get('area_accedida', 'No especificada')
         tipo_acceso = self.miembro_data.get('tipo_acceso', 'miembro')
+        
         if tipo_acceso == 'uso_beneficio':
-            area_accedida = self.miembro_data.get('area_accedida', 'Beneficio')
+            # Para beneficios, formatear el texto
             beneficio_texto = self._formatear_beneficio(area_accedida)
-            self.agregar_info_row(info_layout, "Beneficio:", beneficio_texto)
+            self.agregar_info_row(info_layout, "🛁 Beneficio:", beneficio_texto)
+        else:
+            # Para acceso normal, mostrar el área
+            area_texto = self._formatear_area(area_accedida)
+            self.agregar_info_row(info_layout, "📍 Área:", area_texto)
         
         # Fecha de registro
         fecha_registro = self.miembro_data.get('fecha_registro', 'N/A')
@@ -312,6 +319,18 @@ class NotificacionEntradaWidget(QDialog):
         foto_path = self.miembro_data.get('foto')
         
         foto_a_cargar = foto_url or foto_path
+
+        id_miembro = self.miembro_data.get('id_miembro', 'N/A')
+        if foto_a_cargar:
+            logging.info(
+                f"[FOTO_UI] id_miembro={id_miembro} fuente_seleccionada="
+                f"{self._resumir_fuente_foto(foto_a_cargar)}"
+            )
+        else:
+            logging.warning(
+                f"[FOTO_UI] id_miembro={id_miembro} sin foto_url ni foto local; "
+                "se mantiene placeholder"
+            )
         
         if foto_a_cargar:
             # Crear un hilo para cargar la foto
@@ -322,9 +341,34 @@ class NotificacionEntradaWidget(QDialog):
     def on_foto_loaded(self, pixmap):
         """Manejar la carga de la foto cuando el hilo termina"""
         if pixmap and not pixmap.isNull():
+            logging.info(
+                f"[FOTO_UI] Imagen cargada correctamente: "
+                f"{pixmap.width()}x{pixmap.height()}"
+            )
             pixmap = pixmap.scaled(180, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             pixmap = self.crear_imagen_circular(pixmap)
             self.foto_label.setPixmap(pixmap)
+        else:
+            logging.warning("[FOTO_UI] Señal de foto recibida con pixmap nulo")
+
+    @staticmethod
+    def _resumir_fuente_foto(fuente):
+        """Resumen seguro de la fuente de foto para diagnóstico."""
+        if not fuente:
+            return "sin_fuente"
+
+        try:
+            if fuente.startswith(('http://', 'https://')):
+                parsed = urlparse(fuente)
+                query_keys = sorted(parse_qs(parsed.query).keys())
+                return (
+                    f"tipo=url host={parsed.netloc} path={parsed.path} "
+                    f"query_keys={query_keys}"
+                )
+            existe_local = os.path.exists(fuente)
+            return f"tipo=local path={fuente} exists={existe_local}"
+        except Exception as e:
+            return f"fuente_invalida: {e}"
     
     def crear_imagen_circular(self, pixmap):
         """Crear una imagen circular a partir de un pixmap"""
@@ -562,6 +606,37 @@ class NotificacionEntradaWidget(QDialog):
         # Si no hay coincidencia, capitalizar y devolver
         return area_accedida.strip().capitalize()
 
+    def _formatear_area(self, area_accedida):
+        """Formatear el texto del área para mostrar en la notificación"""
+        if not area_accedida:
+            return "Gimnasio"
+        
+        # Mapeo de áreas a textos más descriptivos
+        mapeo_areas = {
+            'gimnasio': '🏋️ Gimnasio',
+            'gym': '🏋️ Gimnasio',
+            'pesas': '💪 Área de Pesas',
+            'cardio': '🏃 Área de Cardio',
+            'spinning': '🚴 Spinning',
+            'crossfit': '⚡ CrossFit',
+            'yoga': '🧘 Yoga',
+            'pilates': '🤸 Pilates',
+            'funcional': '🏃 Área Funcional',
+            'box': '🥊 Box',
+            'natacion': '🏊 Natación',
+            'alberca': '🏊 Alberca',
+            'general': '🏢 Área General'
+        }
+        
+        # Buscar coincidencia case-insensitive
+        area_lower = area_accedida.lower().strip()
+        for key, value in mapeo_areas.items():
+            if key in area_lower:
+                return value
+        
+        # Si no hay coincidencia, capitalizar y devolver con emoji de entrada
+        return f"📍 {area_accedida.strip().capitalize()}"
+
 
 class FotoThread(QThread):
     """Hilo para cargar la foto del miembro de forma asíncrona"""
@@ -574,12 +649,22 @@ class FotoThread(QThread):
     def run(self):
         """Cargar la foto en un hilo separado"""
         try:
+            if not self.foto_path_or_url:
+                logging.warning("[FOTO_THREAD] Fuente vacía, no se puede cargar foto")
+                return
+
             # Primero intentar como path local
             if self.foto_path_or_url and os.path.exists(self.foto_path_or_url):
+                logging.info(f"[FOTO_THREAD] Cargando foto local: {self.foto_path_or_url}")
                 pixmap = QPixmap(self.foto_path_or_url)
                 if not pixmap.isNull():
+                    logging.info(
+                        f"[FOTO_THREAD] Foto local decodificada: "
+                        f"{pixmap.width()}x{pixmap.height()}"
+                    )
                     self.foto_loaded.emit(pixmap)
                     return
+                logging.warning(f"[FOTO_THREAD] Archivo local no decodificable: {self.foto_path_or_url}")
             
             # Si no es un path válido, intentar como URL
             if self.foto_path_or_url and self.foto_path_or_url.startswith(('http://', 'https://')):
@@ -587,7 +672,16 @@ class FotoThread(QThread):
                 from io import BytesIO
                 
                 try:
+                    logging.info(
+                        f"[FOTO_THREAD] Descargando URL: "
+                        f"{self._resumir_url(self.foto_path_or_url)}"
+                    )
                     response = requests.get(self.foto_path_or_url, timeout=10)
+                    logging.info(
+                        f"[FOTO_THREAD] HTTP status={response.status_code}, "
+                        f"content_type={response.headers.get('Content-Type')}, "
+                        f"content_length={len(response.content)}"
+                    )
                     response.raise_for_status()
                     
                     # Crear QPixmap desde los bytes de la respuesta
@@ -596,12 +690,40 @@ class FotoThread(QThread):
                     pixmap.loadFromData(image_data.getvalue())
                     
                     if not pixmap.isNull():
+                        logging.info(
+                            f"[FOTO_THREAD] Foto URL decodificada: "
+                            f"{pixmap.width()}x{pixmap.height()}"
+                        )
                         self.foto_loaded.emit(pixmap)
                         return
+                    logging.warning("[FOTO_THREAD] Respuesta HTTP recibida pero imagen no decodificable")
                 except Exception as e:
-                    logging.warning(f"Error cargando foto desde URL {self.foto_path_or_url}: {e}")
+                    logging.warning(
+                        f"[FOTO_THREAD] Error cargando foto URL "
+                        f"{self._resumir_url(self.foto_path_or_url)}: {e}"
+                    )
+            else:
+                logging.warning(
+                    f"[FOTO_THREAD] Fuente no válida para URL y no existe como archivo local: "
+                    f"{self.foto_path_or_url}"
+                )
         
         except Exception as e:
-            logging.warning(f"Error general cargando foto: {e}")
+            logging.warning(f"[FOTO_THREAD] Error general cargando foto: {e}")
         
         # Si no hay foto o hay error, no emitir nada (se mantiene el placeholder)
+
+    @staticmethod
+    def _resumir_url(url):
+        """Resumen seguro de URL para logs (sin token completo)."""
+        try:
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            keys = sorted(query.keys())
+            token_len = len(query.get('token', [''])[0]) if 'token' in query else 0
+            return (
+                f"host={parsed.netloc} path={parsed.path} "
+                f"query_keys={keys} token_len={token_len}"
+            )
+        except Exception as e:
+            return f"url_invalida: {e}"

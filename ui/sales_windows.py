@@ -500,13 +500,10 @@ class VentasDiaWindow(QWidget):
     def actualizar_datos(self):
         """Actualizar datos de ventas del día"""
         try:
-            # Obtener ventas del día usando Supabase
-            from datetime import date
+            # Obtener ventas del turno actual usando Supabase
             response = self.pg_manager.client.table('ventas').select(
                 'id_venta, fecha, total, usuarios(nombre_completo)'
-            ).gte('fecha', f'{date.today()}T00:00:00').lte(
-                'fecha', f'{date.today()}T23:59:59'
-            ).order('fecha', desc=True).execute()
+            ).eq('id_turno', self.turno_abierto['id_turno']).eq('metodo_pago', 'efectivo').eq('estado', 'completada').order('fecha', desc=True).execute()
             
             ventas = response.data or []
             
@@ -852,14 +849,14 @@ class CierreCajaWindow(QWidget):
         # Total esperado
         self.esperado_tile = InfoTile("TOTAL ESPERADO", "fa5s.dollar-sign", WindowsPhoneTheme.TILE_BLUE)
         self.esperado_value = self.esperado_tile.add_main_value("$0.00")
-        self.esperado_tile.add_secondary_value("según ventas")
+        self.esperado_tile.add_secondary_value("solo efectivo + monto inicial")
         self.esperado_tile.add_stretch()
         summary_layout.addWidget(self.esperado_tile, 0, 0)
         
         # Número de ventas
         self.ventas_tile = InfoTile("TRANSACCIONES", "fa5s.shopping-cart", WindowsPhoneTheme.TILE_GREEN)
         self.ventas_value = self.ventas_tile.add_main_value("0")
-        self.ventas_tile.add_secondary_value("ventas realizadas")
+        self.ventas_subtotales = self.ventas_tile.add_secondary_value("Efec: $0.00 | Transf: $0.00")
         self.ventas_tile.add_stretch()
         summary_layout.addWidget(self.ventas_tile, 0, 1)
         
@@ -893,7 +890,7 @@ class CierreCajaWindow(QWidget):
         form_layout.addWidget(self.efectivo_input, 0, 1)
         
         # Tarjetas (si aplica)
-        label_tarjeta = QLabel("Pagos con tarjeta:")
+        label_tarjeta = QLabel("Pagos con tarjeta (informativo):")
         label_tarjeta.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_NORMAL, QFont.Bold))
         form_layout.addWidget(label_tarjeta, 1, 0, Qt.AlignTop)
         
@@ -905,7 +902,7 @@ class CierreCajaWindow(QWidget):
         form_layout.addWidget(self.tarjeta_input, 1, 1)
         
         # Otros métodos de pago
-        label_otros = QLabel("Otros pagos:")
+        label_otros = QLabel("Otros pagos (informativo):")
         label_otros.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_NORMAL, QFont.Bold))
         form_layout.addWidget(label_otros, 2, 0, Qt.AlignTop)
         
@@ -944,39 +941,61 @@ class CierreCajaWindow(QWidget):
     def cargar_resumen(self):
         """Cargar resumen del día"""
         try:
-            # Obtener ventas del día usando Supabase
-            from datetime import date
+            if not self.turno_abierto:
+                self.total_esperado_valor = 0.0
+                self.total_ventas_efectivo_valor = 0.0
+                self.total_ventas_transferencia_valor = 0.0
+                return
+
+            monto_inicial = float(self.turno_abierto.get('monto_inicial', 0))
+
+            # Obtener ventas completadas del turno actual
             response = self.pg_manager.client.table('ventas').select(
-                'id_venta, fecha, total, usuarios(nombre_completo)'
-            ).gte('fecha', f'{date.today()}T00:00:00').lte(
-                'fecha', f'{date.today()}T23:59:59'
-            ).order('fecha', desc=True).execute()
+                'id_venta, total, metodo_pago'
+            ).eq('id_turno', self.turno_abierto['id_turno']).eq('estado', 'completada').order('fecha', desc=True).execute()
             
             ventas = response.data or []
-            total_esperado = sum(v.get('total', 0) for v in ventas)
+
+            total_ventas_efectivo = sum(
+                float(v.get('total', 0) or 0)
+                for v in ventas
+                if str(v.get('metodo_pago', '')).lower() == 'efectivo'
+            )
+            total_ventas_transferencia = sum(
+                float(v.get('total', 0) or 0)
+                for v in ventas
+                if str(v.get('metodo_pago', '')).lower() in {'transferencia', 'transferencia_bancaria'}
+            )
+
+            total_esperado = monto_inicial + total_ventas_efectivo
             num_ventas = len(ventas)
             
             # Actualizar widgets
             self.esperado_value.setText(f"${total_esperado:.2f}")
             self.ventas_value.setText(str(num_ventas))
+            self.ventas_subtotales.setText(
+                f"Efec: ${total_ventas_efectivo:.2f} | Transf: ${total_ventas_transferencia:.2f}"
+            )
             
             # Guardar valores para cálculos
             self.total_esperado_valor = total_esperado
+            self.total_ventas_efectivo_valor = total_ventas_efectivo
+            self.total_ventas_transferencia_valor = total_ventas_transferencia
             
         except Exception as e:
             logging.error(f"Error cargando resumen: {e}")
             self.total_esperado_valor = 0.0
+            self.total_ventas_efectivo_valor = 0.0
+            self.total_ventas_transferencia_valor = 0.0
             
     def calcular_diferencia(self):
         """Calcular diferencia entre esperado y contado"""
         try:
             # Obtener valores de los campos
             efectivo = float(self.efectivo_input.text() or 0)
-            tarjeta = float(self.tarjeta_input.text() or 0)
-            otros = float(self.otros_input.text() or 0)
             
-            # Calcular total
-            total = efectivo + tarjeta + otros
+            # Caja solo cuenta efectivo
+            total = efectivo
             
             # Actualizar total contado
             self.total_contado.setText(f"${total:.2f}")
@@ -1113,10 +1132,13 @@ class CierreCajaWindow(QWidget):
         
         # Confirmar cierre
         resumen = (
-            f"Total esperado: ${self.total_esperado_valor:.2f}\n\n"
+            f"Monto inicial: ${float(self.turno_abierto.get('monto_inicial', 0)):.2f}\n"
+            f"Subtotal efectivo (sí cuenta en caja): ${float(getattr(self, 'total_ventas_efectivo_valor', 0.0)):.2f}\n"
+            f"Subtotal transferencia (informativo): ${float(getattr(self, 'total_ventas_transferencia_valor', 0.0)):.2f}\n"
+            f"Total esperado en caja (solo efectivo): ${self.total_esperado_valor:.2f}\n\n"
             f"Efectivo: ${efectivo:.2f}\n"
-            f"Tarjeta: ${tarjeta:.2f}\n"
-            f"Otros: ${otros:.2f}\n"
+            f"Tarjeta (informativo): ${tarjeta:.2f}\n"
+            f"Otros (informativo): ${otros:.2f}\n"
             "─────────────────────\n"
             f"Total contado: ${self.total_contado_valor:.2f}\n"
             f"Diferencia: ${diferencia:.2f}"
@@ -1125,7 +1147,7 @@ class CierreCajaWindow(QWidget):
         if show_confirmation_dialog(
             self,
             "Confirmar Cierre",
-            "Revise el resumen antes de confirmar.",
+            "Revise el resumen antes de confirmar (solo efectivo se cuenta en caja).",
             detail=resumen,
             confirm_text="Sí, cerrar",
             cancel_text="Volver"
@@ -1169,8 +1191,8 @@ class CierreCajaWindow(QWidget):
                 from datetime import datetime
                 self.pg_manager.client.table('turnos_caja').update({
                     'fecha_cierre': datetime.now().isoformat(),
-                    'total_ventas_efectivo': cierre_data['total_esperado'],
-                    'monto_esperado': float(self.turno_abierto['monto_inicial']) + cierre_data['total_esperado'],
+                    'total_ventas_efectivo': float(getattr(self, 'total_ventas_efectivo_valor', 0.0)),
+                    'monto_esperado': cierre_data['total_esperado'],
                     'monto_real_cierre': cierre_data['total_contado'],
                     'diferencia': cierre_data['diferencia'],
                     'cerrado': True,

@@ -24,6 +24,23 @@ class SupabaseService:
         
         if SUPABASE_AVAILABLE and self.url and self.key:
             self.connect()
+
+    def _is_missing_table_error(self, error: Exception, table_name: str) -> bool:
+        text = str(error).lower()
+        return (
+            f"public.{table_name}" in text
+            and ("schema cache" in text or "pgrst205" in text)
+        )
+
+    def _run_optional_suplementos_query(self, query_callable):
+        try:
+            response = query_callable()
+            return response.data or []
+        except Exception as e:
+            if self._is_missing_table_error(e, 'ca_suplementos'):
+                logging.warning("Tabla 'ca_suplementos' no existe; se omiten suplementos en servicio Supabase.")
+                return []
+            raise
     
     def connect(self):
         """Conectar a Supabase"""
@@ -142,6 +159,15 @@ class SupabaseService:
                 if product.get('needs_sync'):
                     # Determinar tabla según tipo de producto
                     table_name = 'ca_productos_varios' if product['tipo'] == 'varios' else 'ca_suplementos'
+
+                    if table_name == 'ca_suplementos':
+                        try:
+                            self.client.table('ca_suplementos').select('codigo_interno').limit(1).execute()
+                        except Exception as e:
+                            if self._is_missing_table_error(e, 'ca_suplementos'):
+                                logging.warning("Se omite sincronización de suplemento: tabla ca_suplementos inexistente.")
+                                continue
+                            raise
                     
                     # Preparar datos para Supabase
                     product_data = {
@@ -180,8 +206,10 @@ class SupabaseService:
             productos.extend(response_varios.data)
             
             # Obtener suplementos  
-            response_suplementos = self.client.table('ca_suplementos').select('*').eq('activo', True).execute()
-            productos.extend(response_suplementos.data)
+            suplementos = self._run_optional_suplementos_query(
+                lambda: self.client.table('ca_suplementos').select('*').eq('activo', True).execute()
+            )
+            productos.extend(suplementos)
             
             logging.info(f"Obtenidos {len(productos)} productos desde Supabase")
             return productos

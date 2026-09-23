@@ -204,11 +204,42 @@ class ConfirmarPagoEfectivoDialog(QDialog):
     def _llamar_edge_function(self, id_venta_digital: int, id_notificacion: int = None):
         """Llamar a la Edge Function para confirmar el pago"""
         try:
+            id_usuario_cajero = self.user_data.get('id_usuario')
+            if not id_usuario_cajero:
+                show_warning_dialog(
+                    self,
+                    "Usuario no identificado",
+                    "No se puede confirmar el pago porque no se identificó el usuario cajero."
+                )
+                self.scan_input.setFocus()
+                return
+
+            if not self.pg_manager:
+                show_warning_dialog(
+                    self,
+                    "Sin conexión POS",
+                    "No se puede confirmar el pago porque no hay acceso al turno actual."
+                )
+                self.scan_input.setFocus()
+                return
+
+            id_turno_actual = self.pg_manager.get_turno_abierto_id(id_usuario_cajero)
+            if not id_turno_actual:
+                show_warning_dialog(
+                    self,
+                    "Turno no abierto",
+                    "Debe abrir un turno para confirmar pagos en efectivo."
+                )
+                self.scan_input.setFocus()
+                return
+
             response = self.supabase_service.client.functions.invoke(
                 'confirm-cash-payment',
                 invoke_options={
                     'body': {
-                        'id_venta_digital': id_venta_digital
+                        'id_venta_digital': id_venta_digital,
+                        'id_turno_actual': id_turno_actual,
+                        'id_usuario_cajero': id_usuario_cajero,
                     }
                 }
             )
@@ -247,19 +278,14 @@ class ConfirmarPagoEfectivoDialog(QDialog):
 
                 # Contabilizar en POS (si tenemos contexto)
                 venta_contable_id = None
-                if self.pg_manager and self.user_data.get('id_usuario'):
-                    turno_id = self.pg_manager.get_turno_abierto_id(self.user_data.get('id_usuario'))
-                    if turno_id:
-                        if id_notificacion:
-                            venta_contable_id = self.pg_manager.contabilizar_pago_efectivo_notificacion_en_pos(
-                                int(id_notificacion),
-                                self.user_data.get('id_usuario'),
-                                turno_id,
-                            )
-                        else:
-                            logging.warning("No se pudo contabilizar: no se obtuvo id_notificacion")
-                    else:
-                        logging.warning("No hay turno abierto: pago confirmado pero no contabilizado en POS")
+                if id_notificacion:
+                    venta_contable_id = self.pg_manager.contabilizar_pago_efectivo_notificacion_en_pos(
+                        int(id_notificacion),
+                        id_usuario_cajero,
+                        id_turno_actual,
+                    )
+                else:
+                    logging.warning("No se pudo contabilizar: no se obtuvo id_notificacion")
                 
                 # Actualizar notificación después de confirmar el pago
                 self._actualizar_notificacion(id_venta_digital)

@@ -67,7 +67,7 @@ class HistorialVentasWindow(QWidget):
         content.setLayout(content_layout)
         
         # Buscador
-        self.search_bar = SearchBar("Buscar por ID de venta, usuario o monto...")
+        self.search_bar = SearchBar("Buscar por ID, usuario, monto, turno, estado o método...")
         self.search_bar.connect_search(self.on_search_changed)
         content_layout.addWidget(self.search_bar)
         
@@ -152,6 +152,48 @@ class HistorialVentasWindow(QWidget):
         self.usuario_combo.currentTextChanged.connect(self.aplicar_filtros)
         usuario_layout.addWidget(self.usuario_combo)
         filters_layout.addWidget(usuario_container, stretch=1)
+
+        # Filtro por turno
+        turno_container = QWidget()
+        turno_layout = QVBoxLayout(turno_container)
+        turno_layout.setContentsMargins(0, 0, 0, 0)
+        turno_layout.setSpacing(4)
+        turno_label = StyledLabel("Turno:", size=WindowsPhoneTheme.FONT_SIZE_SMALL)
+        turno_layout.addWidget(turno_label)
+        self.turno_combo = QComboBox()
+        self.turno_combo.setMinimumHeight(40)
+        self.turno_combo.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_NORMAL))
+        self.turno_combo.currentTextChanged.connect(self.aplicar_filtros)
+        turno_layout.addWidget(self.turno_combo)
+        filters_layout.addWidget(turno_container, stretch=1)
+
+        # Filtro por estado
+        estado_container = QWidget()
+        estado_layout = QVBoxLayout(estado_container)
+        estado_layout.setContentsMargins(0, 0, 0, 0)
+        estado_layout.setSpacing(4)
+        estado_label = StyledLabel("Estado:", size=WindowsPhoneTheme.FONT_SIZE_SMALL)
+        estado_layout.addWidget(estado_label)
+        self.estado_combo = QComboBox()
+        self.estado_combo.setMinimumHeight(40)
+        self.estado_combo.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_NORMAL))
+        self.estado_combo.currentTextChanged.connect(self.aplicar_filtros)
+        estado_layout.addWidget(self.estado_combo)
+        filters_layout.addWidget(estado_container, stretch=1)
+
+        # Filtro por método
+        metodo_container = QWidget()
+        metodo_layout = QVBoxLayout(metodo_container)
+        metodo_layout.setContentsMargins(0, 0, 0, 0)
+        metodo_layout.setSpacing(4)
+        metodo_label = StyledLabel("Método:", size=WindowsPhoneTheme.FONT_SIZE_SMALL)
+        metodo_layout.addWidget(metodo_label)
+        self.metodo_combo = QComboBox()
+        self.metodo_combo.setMinimumHeight(40)
+        self.metodo_combo.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_NORMAL))
+        self.metodo_combo.currentTextChanged.connect(self.aplicar_filtros)
+        metodo_layout.addWidget(self.metodo_combo)
+        filters_layout.addWidget(metodo_container, stretch=1)
         
         # Botón limpiar filtros
         btn_limpiar_container = QWidget()
@@ -174,9 +216,9 @@ class HistorialVentasWindow(QWidget):
     def create_history_table(self, parent_layout):
         """Crear tabla de historial"""
         self.history_table = QTableWidget()
-        self.history_table.setColumnCount(6)
+        self.history_table.setColumnCount(9)
         self.history_table.setHorizontalHeaderLabels([
-            "ID", "Fecha", "Hora", "Total", "Usuario", "Detalles"
+            "ID", "Turno", "Fecha", "Hora", "Método", "Estado", "Total", "Usuario", "Detalles"
         ])
         
         # Configurar para que no sea editable
@@ -189,8 +231,11 @@ class HistorialVentasWindow(QWidget):
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(7, QHeaderView.Stretch)
+        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         
         parent_layout.addWidget(self.history_table)
     
@@ -238,19 +283,31 @@ class HistorialVentasWindow(QWidget):
         fin = min((self.pagina_actual + 1) * self.items_por_pagina, len(self.ventas_filtradas))
         total_filtrados = len(self.ventas_filtradas)
         total_disponibles = len(self.ventas_data)
+
+        total_ventas = sum(float(v.get('total', 0) or 0) for v in self.ventas_filtradas)
+        total_efectivo = sum(
+            float(v.get('total', 0) or 0)
+            for v in self.ventas_filtradas
+            if str(v.get('metodo_pago', '')).lower() == 'efectivo'
+        )
+        total_transferencia = sum(
+            float(v.get('total', 0) or 0)
+            for v in self.ventas_filtradas
+            if str(v.get('metodo_pago', '')).lower() in {'transferencia', 'transferencia_bancaria'}
+        )
         
         # Actualizar label con información completa
         if total_filtrados > 0:
             if total_paginas > 1:
-                total_ventas = sum(v.get('total', 0) for v in self.ventas_filtradas)
                 self.info_label.setText(
                     f"Página {self.pagina_actual + 1}/{total_paginas} | Mostrando {inicio}-{fin} de {total_filtrados} | "
-                    f"Total: ${total_ventas:,.2f} | Disponibles: {total_disponibles}"
+                    f"Total: ${total_ventas:,.2f} | Efectivo: ${total_efectivo:,.2f} | "
+                    f"Transferencia: ${total_transferencia:,.2f} | Disponibles: {total_disponibles}"
                 )
             else:
-                total_ventas = sum(v.get('total', 0) for v in self.ventas_filtradas)
                 self.info_label.setText(
-                    f"Total: {total_filtrados} ventas | ${total_ventas:,.2f} | Disponibles: {total_disponibles}"
+                    f"Total: {total_filtrados} ventas | ${total_ventas:,.2f} | Efectivo: ${total_efectivo:,.2f} | "
+                    f"Transferencia: ${total_transferencia:,.2f} | Disponibles: {total_disponibles}"
                 )
         else:
             self.info_label.setText("No hay registros")
@@ -283,6 +340,9 @@ class HistorialVentasWindow(QWidget):
         """Limpiar todos los filtros"""
         self.search_bar.clear()
         self.usuario_combo.setCurrentIndex(0)
+        self.turno_combo.setCurrentIndex(0)
+        self.estado_combo.setCurrentIndex(0)
+        self.metodo_combo.setCurrentIndex(0)
         self.fecha_desde.setDate(QDate.currentDate().addDays(-30))
         self.fecha_hasta.setDate(QDate.currentDate())
         self.cargar_historial_completo()
@@ -294,7 +354,7 @@ class HistorialVentasWindow(QWidget):
             fecha_hasta = self.fecha_hasta.date().toPython()
             
             response = self.pg_manager.client.table('ventas').select(
-                'id_venta, fecha, total, usuarios(nombre_completo)'
+                'id_venta, id_turno, fecha, total, metodo_pago, estado, usuarios(nombre_completo)'
             ).gte('fecha', f'{fecha_desde}T00:00:00').lte(
                 'fecha', f'{fecha_hasta}T23:59:59'
             ).order('fecha', desc=True).execute()
@@ -312,21 +372,37 @@ class HistorialVentasWindow(QWidget):
             show_warning_dialog(self, "Error", f"Error al cargar historial: {e}")
     
     def cargar_usuarios_filtro(self):
-        """Cargar lista de usuarios para el filtro"""
+        """Cargar opciones de filtros dinámicos"""
         try:
-            # Obtener usuarios únicos de las ventas
+            # Obtener usuarios y turnos únicos de las ventas
             usuarios = set()
+            turnos = set()
             for venta in self.ventas_data:
                 if venta.get('usuarios') and isinstance(venta['usuarios'], dict):
                     nombre = venta['usuarios'].get('nombre_completo')
                     if nombre:
                         usuarios.add(nombre)
+
+                turno = venta.get('id_turno')
+                if turno is not None:
+                    turnos.add(str(turno))
             
-            # Actualizar combo
+            # Actualizar combos
             self.usuario_combo.clear()
             self.usuario_combo.addItem("Todos")
             for usuario in sorted(usuarios):
                 self.usuario_combo.addItem(usuario)
+
+            self.turno_combo.clear()
+            self.turno_combo.addItem("Todos")
+            for turno in sorted(turnos, key=lambda value: int(value)):
+                self.turno_combo.addItem(turno)
+
+            self.estado_combo.clear()
+            self.estado_combo.addItems(["Todos", "Completadas", "Canceladas"])
+
+            self.metodo_combo.clear()
+            self.metodo_combo.addItems(["Todos", "Efectivo", "Tarjeta", "Transferencia"])
                 
         except Exception as e:
             logging.error(f"Error cargando usuarios para filtro: {e}")
@@ -337,6 +413,9 @@ class HistorialVentasWindow(QWidget):
             # Obtener texto de búsqueda
             search_text = self.search_bar.text().lower().strip()
             usuario_filtro = self.usuario_combo.currentText()
+            turno_filtro = self.turno_combo.currentText()
+            estado_filtro = self.estado_combo.currentText()
+            metodo_filtro = self.metodo_combo.currentText()
             
             # Filtrar datos
             self.ventas_filtradas = self.ventas_data
@@ -347,6 +426,41 @@ class HistorialVentasWindow(QWidget):
                     v for v in self.ventas_filtradas 
                     if v.get('usuarios', {}).get('nombre_completo', '') == usuario_filtro
                 ]
+
+            # Filtro por turno
+            if turno_filtro and turno_filtro != "Todos":
+                self.ventas_filtradas = [
+                    v for v in self.ventas_filtradas
+                    if str(v.get('id_turno')) == turno_filtro
+                ]
+
+            # Filtro por estado
+            if estado_filtro and estado_filtro != "Todos":
+                estado_objetivo = 'completada' if estado_filtro == "Completadas" else 'cancelada'
+                self.ventas_filtradas = [
+                    v for v in self.ventas_filtradas
+                    if str(v.get('estado', '')).lower() == estado_objetivo
+                ]
+
+            # Filtro por método
+            if metodo_filtro and metodo_filtro != "Todos":
+                if metodo_filtro == "Tarjeta":
+                    metodos_tarjeta = {'tarjeta_debito', 'tarjeta_credito', 'tarjeta'}
+                    self.ventas_filtradas = [
+                        v for v in self.ventas_filtradas
+                        if str(v.get('metodo_pago', '')).lower() in metodos_tarjeta
+                    ]
+                elif metodo_filtro == "Transferencia":
+                    metodos_transferencia = {'transferencia', 'transferencia_bancaria'}
+                    self.ventas_filtradas = [
+                        v for v in self.ventas_filtradas
+                        if str(v.get('metodo_pago', '')).lower() in metodos_transferencia
+                    ]
+                else:
+                    self.ventas_filtradas = [
+                        v for v in self.ventas_filtradas
+                        if str(v.get('metodo_pago', '')).lower() == metodo_filtro.lower()
+                    ]
             
             # Filtro por búsqueda de texto
             if search_text:
@@ -354,7 +468,10 @@ class HistorialVentasWindow(QWidget):
                     v for v in self.ventas_filtradas
                     if (
                         search_text in str(v.get('id_venta', '')).lower() or
+                        search_text in str(v.get('id_turno', '')).lower() or
                         search_text in str(v.get('total', '')).lower() or
+                        search_text in str(v.get('metodo_pago', '')).lower() or
+                        search_text in str(v.get('estado', '')).lower() or
                         search_text in v.get('usuarios', {}).get('nombre_completo', '').lower()
                     )
                 ]
@@ -376,6 +493,12 @@ class HistorialVentasWindow(QWidget):
                 
                 # ID
                 self.history_table.setItem(row, 0, QTableWidgetItem(str(venta['id_venta'])))
+
+                # Turno
+                turno_text = str(venta.get('id_turno') or 'N/A')
+                turno_item = QTableWidgetItem(turno_text)
+                turno_item.setTextAlignment(Qt.AlignCenter)
+                self.history_table.setItem(row, 1, turno_item)
                 
                 # Parsear fecha - puede venir como datetime o string ISO
                 fecha_obj = venta['fecha']
@@ -391,23 +514,31 @@ class HistorialVentasWindow(QWidget):
                     fecha = fecha_obj.strftime("%d/%m/%Y")
                 else:
                     fecha = str(venta['fecha']) if venta['fecha'] else "N/A"
-                self.history_table.setItem(row, 1, QTableWidgetItem(fecha))
+                self.history_table.setItem(row, 2, QTableWidgetItem(fecha))
                 
                 # Hora (solo la parte de hora)
                 if isinstance(fecha_obj, datetime):
                     hora = fecha_obj.strftime("%H:%M")
                 else:
                     hora = "N/A"
-                self.history_table.setItem(row, 2, QTableWidgetItem(hora))
+                self.history_table.setItem(row, 3, QTableWidgetItem(hora))
+
+                # Método
+                metodo = str(venta.get('metodo_pago') or 'N/A').replace('_', ' ').title()
+                self.history_table.setItem(row, 4, QTableWidgetItem(metodo))
+
+                # Estado
+                estado = str(venta.get('estado') or 'N/A').title()
+                self.history_table.setItem(row, 5, QTableWidgetItem(estado))
                 
                 # Total
                 total_item = QTableWidgetItem(f"${venta['total']:.2f}")
                 total_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.history_table.setItem(row, 3, total_item)
+                self.history_table.setItem(row, 6, total_item)
                 
                 # Usuario
                 usuario_name = venta.get('usuarios', {}).get('nombre_completo', 'N/A') if isinstance(venta.get('usuarios'), dict) else venta.get('usuario', 'N/A')
-                self.history_table.setItem(row, 4, QTableWidgetItem(usuario_name))
+                self.history_table.setItem(row, 7, QTableWidgetItem(usuario_name))
                 
                 # Botón detalles con icono
                 btn_detalles = QPushButton()
@@ -427,7 +558,7 @@ class HistorialVentasWindow(QWidget):
                     }}
                 """)
                 btn_detalles.clicked.connect(lambda checked, vid=venta['id_venta']: self.ver_detalles(vid))
-                self.history_table.setCellWidget(row, 5, btn_detalles)
+                self.history_table.setCellWidget(row, 8, btn_detalles)
             
             # Actualizar información y paginación
             if mostrar_paginacion:
@@ -490,7 +621,7 @@ class HistorialVentasWindow(QWidget):
             
             # Obtener datos de ventas desde Supabase
             response = self.pg_manager.client.table('ventas').select(
-                'id_venta, fecha, total, usuarios(nombre_completo)'
+                'id_venta, id_turno, fecha, total, metodo_pago, estado, usuarios(nombre_completo)'
             ).gte('fecha', f'{fecha_desde}T00:00:00').lte(
                 'fecha', f'{fecha_hasta}T23:59:59'
             ).order('fecha', desc=True).execute()
@@ -515,7 +646,7 @@ class HistorialVentasWindow(QWidget):
             )
             
             # Encabezados
-            headers = ["ID Venta", "Fecha", "Hora", "Total", "Usuario"]
+            headers = ["ID Venta", "Turno", "Fecha", "Hora", "Método", "Estado", "Total", "Usuario"]
             
             for col, header in enumerate(headers, 1):
                 cell = ws.cell(row=1, column=col, value=header)
@@ -527,29 +658,44 @@ class HistorialVentasWindow(QWidget):
             # Datos
             for row, venta in enumerate(ventas, 2):
                 ws.cell(row=row, column=1, value=venta['id_venta']).border = border
+
+                # Turno
+                ws.cell(row=row, column=2, value=venta.get('id_turno') or "N/A").border = border
                 
                 # Fecha
                 fecha = venta['fecha'].strftime("%d/%m/%Y") if isinstance(venta['fecha'], datetime) else str(venta['fecha'])
-                ws.cell(row=row, column=2, value=fecha).border = border
+                ws.cell(row=row, column=3, value=fecha).border = border
                 
                 # Hora
                 hora = venta['fecha'].strftime("%H:%M") if isinstance(venta['fecha'], datetime) else "N/A"
-                ws.cell(row=row, column=3, value=hora).border = border
+                ws.cell(row=row, column=4, value=hora).border = border
+
+                # Método
+                metodo = str(venta.get('metodo_pago') or 'N/A').replace('_', ' ').title()
+                ws.cell(row=row, column=5, value=metodo).border = border
+
+                # Estado
+                estado = str(venta.get('estado') or 'N/A').title()
+                ws.cell(row=row, column=6, value=estado).border = border
                 
                 # Total
-                total_cell = ws.cell(row=row, column=4, value=venta['total'])
+                total_cell = ws.cell(row=row, column=7, value=venta['total'])
                 total_cell.number_format = '$#,##0.00'
                 total_cell.border = border
                 
                 # Usuario
-                ws.cell(row=row, column=5, value=venta.get('usuario', 'N/A')).border = border
+                usuario_name = venta.get('usuarios', {}).get('nombre_completo', 'N/A') if isinstance(venta.get('usuarios'), dict) else 'N/A'
+                ws.cell(row=row, column=8, value=usuario_name).border = border
             
             # Ajustar anchos de columna
             ws.column_dimensions['A'].width = 12
-            ws.column_dimensions['B'].width = 15
-            ws.column_dimensions['C'].width = 10
-            ws.column_dimensions['D'].width = 15
-            ws.column_dimensions['E'].width = 25
+            ws.column_dimensions['B'].width = 10
+            ws.column_dimensions['C'].width = 15
+            ws.column_dimensions['D'].width = 10
+            ws.column_dimensions['E'].width = 16
+            ws.column_dimensions['F'].width = 14
+            ws.column_dimensions['G'].width = 15
+            ws.column_dimensions['H'].width = 25
             
             # Guardar archivo
             fecha_str = datetime.now().strftime("%Y%m%d_%H%M%S")

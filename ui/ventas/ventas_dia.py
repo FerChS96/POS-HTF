@@ -89,6 +89,7 @@ class VentasDiaWindow(QWidget):
         # Total vendido
         self.total_tile = InfoTile("TOTAL VENDIDO", "fa5s.dollar-sign", WindowsPhoneTheme.TILE_GREEN)
         self.total_value = self.total_tile.add_main_value("$0.00")
+        self.total_breakdown = self.total_tile.add_secondary_value("Efectivo: $0.00 | Transferencia: $0.00")
         widgets_layout.addWidget(self.total_tile)
         
         # Número de ventas
@@ -114,17 +115,36 @@ class VentasDiaWindow(QWidget):
                 self.ventas_count.setText("0")
                 return
             
-            # Obtener ventas del turno usando Supabase
+            # Obtener ventas completadas del turno (cualquier método de pago)
             response = self.pg_manager.client.table('ventas').select(
-                'id_venta, fecha, total, usuarios(nombre_completo)'
-            ).eq('id_turno', self.turno_id).order('fecha', desc=True).execute()
+                'id_venta, fecha, total, metodo_pago, usuarios(nombre_completo)'
+            ).eq('id_turno', self.turno_id).eq('estado', 'completada').order('fecha', desc=True).execute()
             
             ventas = response.data or []
-            total_vendido = sum(v.get('total', 0) for v in ventas)
+            # Comandas: todas las ventas completadas del turno (sin importar método)
             num_ventas = len(ventas)
+            # Total vendido: solo efectivo dentro del mismo turno
+            total_vendido = sum(
+                float(v.get('total', 0) or 0)
+                for v in ventas
+                if (v.get('metodo_pago') or '').lower() == 'efectivo'
+            )
+            total_transferencia = sum(
+                float(v.get('total', 0) or 0)
+                for v in ventas
+                if (v.get('metodo_pago') or '').lower() in {'transferencia', 'transferencia_bancaria'}
+            )
             
             self.total_value.setText(f"${total_vendido:.2f}")
+            self.total_breakdown.setText(
+                f"Efectivo: ${total_vendido:.2f} | Transferencia: ${total_transferencia:.2f}"
+            )
             self.ventas_count.setText(str(num_ventas))
+
+            logging.info(
+                f"Ventas turno {self.turno_id}: comandas={num_ventas}, "
+                f"total_efectivo=${total_vendido:.2f}, total_transferencia=${total_transferencia:.2f}"
+            )
 
         except Exception as e:
             logging.error(f"Error actualizando datos: {e}")
@@ -173,7 +193,7 @@ class VentasDiaWindow(QWidget):
             # Obtener ventas del turno desde Supabase
             response = self.pg_manager.client.table('ventas').select(
                 'id_venta, fecha, total, usuarios(nombre_completo)'
-            ).eq('id_turno', self.turno_id).order('fecha', desc=True).execute()
+            ).eq('id_turno', self.turno_id).eq('estado', 'completada').order('fecha', desc=True).execute()
             
             ventas = response.data or []
             
@@ -286,9 +306,9 @@ class DetalleVentasDiaDialog(QDialog):
         
         # Tabla de comandas
         self.tabla_ventas = QTableWidget()
-        self.tabla_ventas.setColumnCount(6)
+        self.tabla_ventas.setColumnCount(7)
         self.tabla_ventas.setHorizontalHeaderLabels([
-            "ID", "Hora", "Total", "Usuario", "Estado", "Acción"
+            "ID", "Hora", "Total", "Usuario", "Método", "Estado", "Acción"
         ])
         
         header = self.tabla_ventas.horizontalHeader()
@@ -297,8 +317,9 @@ class DetalleVentasDiaDialog(QDialog):
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.Stretch)
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.Fixed)
-        header.resizeSection(5, 120)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.Fixed)
+        header.resizeSection(6, 120)
         
         layout.addWidget(self.tabla_ventas)
         
@@ -316,8 +337,8 @@ class DetalleVentasDiaDialog(QDialog):
         """Cargar ventas del turno"""
         try:
             response = self.pg_manager.client.table('ventas').select(
-                'id_venta, fecha, total, usuarios(nombre_completo)'
-            ).eq('id_turno', self.turno_id).order('fecha', desc=True).execute()
+                'id_venta, fecha, total, metodo_pago, usuarios(nombre_completo)'
+            ).eq('id_turno', self.turno_id).eq('estado', 'completada').order('fecha', desc=True).execute()
             
             ventas = response.data or []
             
@@ -342,9 +363,14 @@ class DetalleVentasDiaDialog(QDialog):
                 # Usuario
                 usuario_name = venta.get('usuarios', {}).get('nombre_completo', 'N/A') if isinstance(venta.get('usuarios'), dict) else venta.get('usuario', 'N/A')
                 self.tabla_ventas.setItem(row, 3, QTableWidgetItem(usuario_name))
+
+                # Método de pago
+                metodo_pago = str(venta.get('metodo_pago') or 'N/A').replace('_', ' ').title()
+                self.tabla_ventas.setItem(row, 4, QTableWidgetItem(metodo_pago))
                 
                 # Estado
-                self.tabla_ventas.setItem(row, 4, QTableWidgetItem("Completada"))
+                estado = str(venta.get('estado') or 'Completada').title()
+                self.tabla_ventas.setItem(row, 5, QTableWidgetItem(estado))
                 
                 # Botón ver detalle con icono
                 btn_ver = QPushButton()
@@ -364,7 +390,7 @@ class DetalleVentasDiaDialog(QDialog):
                     }}
                 """)
                 btn_ver.clicked.connect(lambda checked, v_id=venta['id_venta']: self.ver_detalle_comanda(v_id))
-                self.tabla_ventas.setCellWidget(row, 5, btn_ver)
+                self.tabla_ventas.setCellWidget(row, 6, btn_ver)
                 
         except Exception as e:
             logging.error(f"Error cargando ventas: {e}")

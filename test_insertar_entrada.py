@@ -147,7 +147,7 @@ def main():
 
         # Seleccionar tipo de acceso
         print("\n🎯 Selecciona el tipo de acceso:")
-        print("  1. Visita normal al gimnasio")
+        print("  1. Visita al gimnasio (áreas de ejercicio)")
         print("  2. Uso de beneficio (regaderas, vapores, acompañante, etc.)")
         
         tipo_acceso_seleccionado = None
@@ -160,9 +160,65 @@ def main():
                 
                 if tipo_input == '1':
                     tipo_acceso_seleccionado = 'miembro'
-                    beneficio_seleccionado = 'Gimnasio'
-                    print("✅ Tipo seleccionado: Visita normal al gimnasio")
+                    print("✅ Tipo seleccionado: Visita al gimnasio")
+                    
+                    # Seleccionar área del gimnasio
+                    print("\n🏋️ Selecciona el área del gimnasio:")
+                    print("  1. Gimnasio (general)")
+                    print("  2. Área de Pesas")
+                    print("  3. Área de Cardio")
+                    print("  4. Spinning")
+                    print("  5. CrossFit")
+                    print("  6. Yoga/Pilates")
+                    print("  7. Área Funcional")
+                    print("  8. Box")
+                    print("  9. Natación/Alberca")
+                    print("  10. Otra área")
+                    
+                    while True:
+                        print(f"🔍 Selecciona el área (1-10): ", end="")
+                        area_input = input().strip()
+                        
+                        if area_input == '1':
+                            beneficio_seleccionado = 'Gimnasio'
+                            break
+                        elif area_input == '2':
+                            beneficio_seleccionado = 'Pesas'
+                            break
+                        elif area_input == '3':
+                            beneficio_seleccionado = 'Cardio'
+                            break
+                        elif area_input == '4':
+                            beneficio_seleccionado = 'Spinning'
+                            break
+                        elif area_input == '5':
+                            beneficio_seleccionado = 'CrossFit'
+                            break
+                        elif area_input == '6':
+                            beneficio_seleccionado = 'Yoga'
+                            break
+                        elif area_input == '7':
+                            beneficio_seleccionado = 'Funcional'
+                            break
+                        elif area_input == '8':
+                            beneficio_seleccionado = 'Box'
+                            break
+                        elif area_input == '9':
+                            beneficio_seleccionado = 'Natacion'
+                            break
+                        elif area_input == '10':
+                            print("Especifica el área: ", end="")
+                            beneficio_seleccionado = input().strip()
+                            if beneficio_seleccionado:
+                                break
+                            else:
+                                print("❌ El área no puede estar vacía")
+                        else:
+                            print("❌ Opción no válida. Selecciona 1-10.")
+                    
+                    print(f"✅ Área seleccionada: {beneficio_seleccionado}")
                     break
+                    
                 elif tipo_input == '2':
                     tipo_acceso_seleccionado = 'uso_beneficio'
                     print("✅ Tipo seleccionado: Uso de beneficio")
@@ -244,16 +300,25 @@ def main():
 
             if response.data:
                 id_entrada = response.data[0]['id_entrada']
-                tipo_acceso_texto = "visita normal" if tipo_acceso_seleccionado == 'miembro' else f"uso de beneficio ({beneficio_seleccionado})"
+                
+                # Mensaje descriptivo según el tipo de acceso
+                if tipo_acceso_seleccionado == 'miembro':
+                    tipo_acceso_texto = f"acceso a {beneficio_seleccionado}"
+                else:
+                    tipo_acceso_texto = f"uso de beneficio: {beneficio_seleccionado}"
+                
                 print("✅ ¡Entrada insertada exitosamente!")
                 print(f"   🆔 ID de entrada: {id_entrada}")
                 print(f"   👤 Miembro: {nombre_completo}")
                 print(f"   🎯 Tipo: {tipo_acceso_texto}")
+                print(f"   📍 Área/Beneficio: {beneficio_seleccionado}")
                 print(f"   📅 Fecha: {current_time.strftime('%Y-%m-%d %H:%M:%S')} (CDMX)")
 
                 print("\n🎉 ¡El monitor de entradas debería detectar esta nueva entrada!")
                 print("   Si tienes el test_monitor_entradas.py corriendo, deberías ver la notificación.")
                 print("   Si tienes la aplicación POS abierta, deberías ver la notificación emergente.")
+                print(f"\n💡 Puedes probar el torniquete con: python torniquete_script.py")
+                print(f"   Usando el ID de entrada: {id_entrada}")
                 return 0
             else:
                 print("❌ ERROR: No se pudo insertar la entrada")

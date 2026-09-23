@@ -228,7 +228,7 @@ class EditableCatalogGrid(QWidget):
         tabla = QTableWidget()
         tabla.setColumnCount(9)
         tabla.setHorizontalHeaderLabels([
-            "Código", "Nombre", "Descripción", "Precio", "Categoría", "Cantidad", "Unidad", "Código Barras", "Activo"
+            "Código", "Nombre", "Descripción", "Precio", "Categoría", "Medida", "Unidad", "Código Barras", "Activo"
         ])
         
         # Configurar header
@@ -349,8 +349,15 @@ class EditableCatalogGrid(QWidget):
             self.productos_varios = response_varios.data or []
             
             # Obtener suplementos
-            response_suplementos = self.pg_manager.client.table('ca_suplementos').select('*').execute()
-            self.suplementos = response_suplementos.data or []
+            try:
+                response_suplementos = self.pg_manager.client.table('ca_suplementos').select('*').execute()
+                self.suplementos = response_suplementos.data or []
+            except Exception as e:
+                if "public.ca_suplementos" in str(e).lower() and ("schema cache" in str(e).lower() or "pgrst205" in str(e).lower()):
+                    logging.warning("Tabla 'ca_suplementos' no existe; se carga catálogo sin suplementos.")
+                    self.suplementos = []
+                else:
+                    raise
             
             # Actualizar combos de filtros
             self.actualizar_combos_filtros()
@@ -601,7 +608,10 @@ class EditableCatalogGrid(QWidget):
                 try:
                     # Determinar si es producto varios o suplemento
                     es_producto_varios = any(p.get('codigo_interno') == codigo for p in self.productos_varios)
-                    tabla_nombre = 'ca_productos_varios' if es_producto_varios else 'ca_suplementos'
+                    if not es_producto_varios:
+                        logging.warning(f"Se omite guardado de '{codigo}': no pertenece a productos varios (suplementos deshabilitados).")
+                        continue
+                    tabla_nombre = 'ca_productos_varios'
                     
                     # Convertir valores booleanos
                     for campo in ['activo']:

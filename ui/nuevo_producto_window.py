@@ -392,11 +392,17 @@ class NuevoProductoWindow(QWidget):
                 return
             
             # Buscar en suplementos
-            response_suplemento = self.pg_manager.client.table('ca_suplementos').select(
-                'codigo_interno, nombre'
-            ).eq('codigo_barras', codigo_barras).execute()
-            
-            producto_suplemento = response_suplemento.data[0] if response_suplemento.data else None
+            producto_suplemento = None
+            try:
+                response_suplemento = self.pg_manager.client.table('ca_suplementos').select(
+                    'codigo_interno, nombre'
+                ).eq('codigo_barras', codigo_barras).execute()
+                producto_suplemento = response_suplemento.data[0] if response_suplemento.data else None
+            except Exception as e:
+                if "public.ca_suplementos" in str(e).lower() and ("schema cache" in str(e).lower() or "pgrst205" in str(e).lower()):
+                    logging.warning("Tabla 'ca_suplementos' no existe; se omite validación de código en suplementos.")
+                else:
+                    raise
             
             if producto_suplemento:
                 logging.warning(f"Código de barras duplicado en suplementos: {codigo_barras}")
