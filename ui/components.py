@@ -953,8 +953,14 @@ class AlertDialog(QDialog):
             f"background-color: {accent_color}; color: white;"
         )
         if self._secondary_button:
+            # El fondo se declara EXPLICITAMENTE aunque la hoja global ya lo
+            # ponga transparente. Al fijar solo el color de texto, el boton
+            # heredaba el fondo de la hoja del widget padre y podia acabar con
+            # texto del mismo color que su fondo: un boton en blanco. Un
+            # dialogo no debe depender del estilo de quien lo abre.
             self._secondary_button.setStyleSheet(
-                f"color: {accent_color}; border-color: rgba(30, 58, 138, 0.35);"
+                f"background-color: transparent; color: {accent_color}; "
+                f"border: 3px solid rgba(30, 58, 138, 0.35);"
             )
         self._header_frame.setStyleSheet(f"background-color: {accent_color};")
 

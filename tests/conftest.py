@@ -69,12 +69,32 @@ class ConsultaFake:
         self._orden = None
         self._contar = None
         self._single = False
+        self._columnas = None    # columnas pedidas en select(), None = todas
 
     # --- operaciones ---
     def select(self, *columnas, **kwargs):
         self._operacion = "select"
         self._contar = kwargs.get("count")
+        # PostgREST devuelve SOLO las columnas pedidas. Imitarlo importa: es lo
+        # que hace que una consulta que no pide 'contrasenia' no la reciba.
+        self._columnas = self._parsear_columnas(columnas)
         return self
+
+    @staticmethod
+    def _parsear_columnas(columnas):
+        """
+        Lista de columnas a devolver, o None para devolver la fila entera.
+
+        Se devuelve None (sin recorte) con '*' o con sintaxis de relaciones
+        anidadas tipo 'usuarios(nombre_completo)', que este doble no resuelve.
+        """
+        if not columnas:
+            return None
+        crudo = ",".join(str(c) for c in columnas)
+        if "*" in crudo or "(" in crudo:
+            return None
+        nombres = [c.strip() for c in crudo.split(",") if c.strip()]
+        return nombres or None
 
     def insert(self, datos, **kwargs):
         self._operacion = "insert"
@@ -232,6 +252,11 @@ class ConsultaFake:
             seleccionadas = seleccionadas[: self._limite]
 
         datos = [copy.deepcopy(f) for f in seleccionadas]
+        if self._columnas is not None:
+            datos = [
+                {c: fila[c] for c in self._columnas if c in fila}
+                for fila in datos
+            ]
         if self._single:
             return RespuestaFake(datos[0] if datos else None, total)
         return RespuestaFake(datos, total if self._contar else None)

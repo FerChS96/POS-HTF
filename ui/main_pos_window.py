@@ -66,6 +66,35 @@ from utils.monitor_entradas_fastapi import MonitorEntradasFastAPI
 from database.postgres_manager import PostgresManager
 
 
+def _limite_notificaciones():
+    """
+    Cuántos avisos de entrada pueden estar abiertos a la vez.
+
+    Cada notificación abierta ocupa unos 2.3 MB. Sin tope, una jornada con el
+    torniquete activo llegaba a cientos de ventanas y la máquina se arrastraba.
+    Ajustable con NOTIFICACIONES_MAX_VISIBLES en el .env.
+    """
+    crudo = (os.getenv('NOTIFICACIONES_MAX_VISIBLES') or '').strip()
+    if crudo:
+        try:
+            valor = int(crudo)
+            if 1 <= valor <= 50:
+                return valor
+            logging.warning(
+                f"[AVISO] NOTIFICACIONES_MAX_VISIBLES={valor} fuera de rango (1-50); "
+                f"se usa 8."
+            )
+        except ValueError:
+            logging.warning(
+                f"[AVISO] NOTIFICACIONES_MAX_VISIBLES={crudo!r} no es un numero; "
+                f"se usa 8."
+            )
+    return 8
+
+
+MAX_NOTIFICACIONES_VISIBLES = _limite_notificaciones()
+
+
 class MainPOSWindow(QMainWindow):
     """Ventana principal del sistema POS"""
     
@@ -112,6 +141,61 @@ class MainPOSWindow(QMainWindow):
 
     def _sales_disabled_for_role(self) -> bool:
         return self._role_lower() == 'administrador'
+
+    def _tiene_permiso(self, permiso) -> bool:
+        """
+        Si el usuario de la sesión tiene un permiso.
+
+        Ante cualquier fallo responde False: más vale esconder una pestaña de
+        más que mostrar una a quien no le toca.
+        """
+        try:
+            id_usuario = (self.user_data or {}).get('id_usuario')
+            if not id_usuario or not self.pg_manager:
+                return False
+            return bool(self.pg_manager.tiene_permiso(id_usuario, permiso))
+        except Exception as e:
+            logging.error(f"[ERROR] No se pudo comprobar el permiso {permiso!r}: {e}")
+            return False
+
+    def puede_ver_inventario(self) -> bool:
+        """
+        Quién ve la pestaña Inventario.
+
+        Se exige `inventario.actualizar`, que es un permiso OTORGABLE: así un
+        administrador puede dárselo a una recepcionista concreta y la pestaña
+        le aparece. Administración lo trae de serie por su rol.
+        """
+        from database.permisos import INVENTARIO_ACTUALIZAR
+
+        return self._tiene_permiso(INVENTARIO_ACTUALIZAR)
+
+    def puede_ver_administracion(self) -> bool:
+        """Quién ve la pestaña Admin: solo quien puede gestionar cuentas."""
+        from database.permisos import USUARIOS_GESTIONAR
+
+        return self._tiene_permiso(USUARIOS_GESTIONAR)
+
+    def puede_cambiar_contrasenas(self) -> bool:
+        """
+        Quién puede cambiar contraseñas: solo administración.
+
+        Una recepcionista ya no cambia la suya desde el POS; se la cambia un
+        administrador desde Admin -> Gestionar Usuarios.
+        """
+        from database.permisos import USUARIOS_GESTIONAR
+
+        return self._tiene_permiso(USUARIOS_GESTIONAR)
+
+    def puede_ver_configuracion(self) -> bool:
+        """
+        Quién ve la pestaña Configuración.
+
+        Para una recepcionista quedaría vacía: sin sincronizar, sin respaldar,
+        sin cambio de contraseña, y con el cierre de sesión ya en la barra
+        inferior. Así que directamente no se le muestra.
+        """
+        return self.puede_cambiar_contrasenas()
 
     def _default_tab_index(self) -> int:
         # Para administrador arrancar en Admin (evitar ver Ventas)
@@ -180,9 +264,18 @@ class MainPOSWindow(QMainWindow):
             {"name": "Config", "icon": "fa5s.cog", "color": WindowsPhoneTheme.TILE_GRAY, "index": 4},
         ]
 
-        # UI-only control de acceso: recepcionista no ve Inventario/Admin
-        if role == 'recepcionista':
-            tabs = [t for t in tabs if t['name'] not in ('Inventario', 'Admin')]
+        # Las pestañas se deciden por PERMISOS, no por el nombre del rol. Antes
+        # se ocultaban con `if role == 'recepcionista'`, así que otorgarle
+        # inventario a una recepcionista no servía de nada: el permiso quedaba
+        # guardado y era efectivo, pero la pestaña seguía sin aparecer.
+        if not self.puede_ver_inventario():
+            tabs = [t for t in tabs if t['name'] != 'Inventario']
+
+        if not self.puede_ver_administracion():
+            tabs = [t for t in tabs if t['name'] != 'Admin']
+
+        if not self.puede_ver_configuracion():
+            tabs = [t for t in tabs if t['name'] != 'Config']
 
         # Administrador: ocultar Ventas
         if self._sales_disabled_for_role():
@@ -197,9 +290,20 @@ class MainPOSWindow(QMainWindow):
             btn.clicked.connect(lambda checked, idx=tab['index']: self.switch_tab(idx))
             nav_layout.addWidget(btn)
             self.tab_buttons.append(btn)
-        
+
+        # Cerrar sesión en la barra inferior para quien no tiene pestaña de
+        # Configuración, que es donde vive ese botón para administración.
+        # No es una pestaña: no cambia de página, ejecuta la acción.
+        if not self.puede_ver_configuracion():
+            btn_salir = TabButton("Salir", "fa5s.sign-out-alt", WindowsPhoneTheme.TILE_RED)
+            btn_salir.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            btn_salir.setCheckable(False)
+            btn_salir.clicked.connect(self.handle_logout)
+            nav_layout.addWidget(btn_salir)
+            self.boton_salir = btn_salir
+
         # El check inicial lo define setup_ui() vía switch_tab
-        
+
         parent_layout.addWidget(self.nav_bar)
         
     def switch_tab(self, index):
@@ -355,42 +459,50 @@ class MainPOSWindow(QMainWindow):
         # Solo mostrar si es administrador
         if self.user_data['rol'] in ['administrador', 'sistemas']:
             # Fila 1
+            btn_usuarios = TileButton("Gestionar\nUsuarios", "fa5s.user-shield", WindowsPhoneTheme.TILE_PURPLE)
+            btn_usuarios.clicked.connect(self.abrir_gestion_usuarios)
+            admin_grid.addWidget(btn_usuarios, 0, 0)
+
+            btn_permisos = TileButton("Permisos\nEspeciales", "fa5s.user-lock", WindowsPhoneTheme.TILE_MAGENTA)
+            btn_permisos.clicked.connect(self.abrir_gestion_permisos)
+            admin_grid.addWidget(btn_permisos, 0, 1)
+
             btn_personal = TileButton("Gestionar\nPersonal", "fa5s.users-cog", WindowsPhoneTheme.TILE_GREEN)
             btn_personal.clicked.connect(self.abrir_gestion_personal)
-            admin_grid.addWidget(btn_personal, 0, 0)
+            admin_grid.addWidget(btn_personal, 0, 2)
             
             btn_dias_festivos = TileButton("Días\nFestivos", "fa5s.calendar-alt", WindowsPhoneTheme.TILE_BLUE)
             btn_dias_festivos.clicked.connect(self.abrir_dias_festivos)
-            admin_grid.addWidget(btn_dias_festivos, 0, 1)
+            admin_grid.addWidget(btn_dias_festivos, 0, 3)
             
+            # Fila 2
             btn_historial_turnos = TileButton("Historial\nTurnos", "fa5s.cash-register", WindowsPhoneTheme.TILE_TEAL)
             btn_historial_turnos.clicked.connect(self.abrir_historial_turnos)
-            admin_grid.addWidget(btn_historial_turnos, 0, 2)
+            admin_grid.addWidget(btn_historial_turnos, 1, 0)
             
             btn_asignar_turnos = TileButton("Asignar\nTurnos", "fa5s.calendar-check", WindowsPhoneTheme.TILE_ORANGE)
             btn_asignar_turnos.clicked.connect(self.abrir_asignacion_turnos)
-            admin_grid.addWidget(btn_asignar_turnos, 0, 3)
+            admin_grid.addWidget(btn_asignar_turnos, 1, 1)
             
-            # Fila 2
             btn_ubicaciones = TileButton("Gestionar\nUbicaciones", "fa5s.warehouse", WindowsPhoneTheme.TILE_BLUE)
             btn_ubicaciones.clicked.connect(self.abrir_gestion_ubicaciones)
-            admin_grid.addWidget(btn_ubicaciones, 1, 0)
+            admin_grid.addWidget(btn_ubicaciones, 1, 2)
             
             btn_catalogo_lockers = TileButton("Catálogo\nde Lockers", "mdi.locker-multiple", WindowsPhoneTheme.TILE_TEAL)
             btn_catalogo_lockers.clicked.connect(self.abrir_catalogo_lockers)
-            admin_grid.addWidget(btn_catalogo_lockers, 1, 1)
+            admin_grid.addWidget(btn_catalogo_lockers, 1, 3)
             
             btn_historial_ventas = TileButton("Historial\nVentas", "fa5s.history", WindowsPhoneTheme.TILE_PURPLE)
             btn_historial_ventas.clicked.connect(self.abrir_historial)
-            admin_grid.addWidget(btn_historial_ventas, 1, 2)
+            admin_grid.addWidget(btn_historial_ventas, 2, 0)
             
             btn_historial_lockers = TileButton("Historial\nLockers", "fa5s.key", WindowsPhoneTheme.TILE_MAGENTA)
             btn_historial_lockers.clicked.connect(self.abrir_historial_lockers)
-            admin_grid.addWidget(btn_historial_lockers, 1, 3)
+            admin_grid.addWidget(btn_historial_lockers, 2, 1)
 
             btn_cancelar_pagos = TileButton("Cancelar\nPagos", "fa5s.ban", WindowsPhoneTheme.TILE_RED)
             btn_cancelar_pagos.clicked.connect(self.abrir_cancelar_pagos)
-            admin_grid.addWidget(btn_cancelar_pagos, 2, 0)
+            admin_grid.addWidget(btn_cancelar_pagos, 2, 2)
         else:
             # Si no es administrador, mostrar mensaje
             no_access_label = StyledLabel(
@@ -416,19 +528,26 @@ class MainPOSWindow(QMainWindow):
         # Grid de configuración
         config_grid = create_tile_grid_layout()
         
-        btn_change_password = TileButton("Cambiar Contraseña", "fa5s.lock", WindowsPhoneTheme.TILE_ORANGE)
-        btn_change_password.clicked.connect(self.cambiar_contrasena)
-        btn_sync = TileButton("Sincronizar", "fa5s.sync", WindowsPhoneTheme.TILE_BLUE)
-        btn_backup = TileButton("Respaldar Datos", "fa5s.database", WindowsPhoneTheme.TILE_TEAL)
+        # "Sincronizar" y "Respaldar Datos" se retiraron: eran mosaicos sin
+        # ninguna acción conectada, así que no hacían nada al pulsarlos.
+        columna = 0
+
+        # El cambio de contraseña queda reservado a administración, que lo
+        # gestiona desde Admin -> Gestionar Usuarios.
+        if self.puede_cambiar_contrasenas():
+            btn_change_password = TileButton(
+                "Cambiar Contraseña", "fa5s.lock", WindowsPhoneTheme.TILE_ORANGE
+            )
+            btn_change_password.clicked.connect(self.cambiar_contrasena)
+            config_grid.addWidget(btn_change_password, 0, columna)
+            columna += 1
+
+        # Cerrar sesión vive aquí solo para administración. Las recepcionistas
+        # no ven esta pestaña, así que su botón está en la barra inferior.
         btn_logout = TileButton("Cerrar Sesión", "fa5s.sign-out-alt", WindowsPhoneTheme.TILE_RED)
         btn_logout.clicked.connect(self.handle_logout)
-        
-        # Posicionar botones
-        config_grid.addWidget(btn_change_password, 0, 0)
-        config_grid.addWidget(btn_sync, 0, 1)
-        config_grid.addWidget(btn_backup, 1, 0)
-        config_grid.addWidget(btn_logout, 1, 1)
-        
+        config_grid.addWidget(btn_logout, 0, columna)
+
         layout.addLayout(config_grid)
         layout.addStretch()
         
@@ -1066,6 +1185,80 @@ class MainPOSWindow(QMainWindow):
         logging.info(f"Venta completada: ID {venta_info['id_venta']}, Total: ${venta_info['total']:.2f}")
         # Aquí se pueden agregar actualizaciones adicionales como refrescar estadísticas
     
+    def abrir_gestion_usuarios(self):
+        """Abrir la gestión de cuentas de acceso al POS."""
+        try:
+            # Defensa en profundidad: el botón ya está oculto para otros roles,
+            # pero se vuelve a comprobar aquí por si se llegara por otra vía.
+            if self._role_lower() not in ('administrador', 'sistemas'):
+                logging.warning(
+                    f"[SEGURIDAD] Intento de abrir Gestionar Usuarios con rol "
+                    f"'{self._role_lower()}' (usuario "
+                    f"{self.user_data.get('username', '?')})"
+                )
+                show_warning_dialog(
+                    self, "Acceso denegado",
+                    "Solo un administrador puede gestionar usuarios."
+                )
+                return
+
+            from ui.usuarios_window import UsuariosWindow
+
+            self.top_bar.set_title("GESTIÓN DE USUARIOS")
+            self.nav_bar.hide()
+
+            usuarios_widget = UsuariosWindow(self.pg_manager, self.user_data)
+            usuarios_widget.cerrar_solicitado.connect(self.volver_a_administracion)
+
+            self.stacked_widget.addWidget(usuarios_widget)
+            self.stacked_widget.setCurrentWidget(usuarios_widget)
+
+            logging.info(
+                f"[OK] Gestión de usuarios abierta por "
+                f"'{self.user_data.get('username', '?')}'"
+            )
+        except Exception as e:
+            logging.error(f"[ERROR] Error abriendo gestión de usuarios: {e}")
+            show_error_dialog(self, "Error",
+                              "No se pudo abrir la gestión de usuarios.", str(e))
+
+    def abrir_gestion_permisos(self):
+        """Abrir el otorgamiento de permisos especiales a recepción."""
+        try:
+            # Defensa en profundidad: el botón ya está oculto para otros roles,
+            # pero se vuelve a comprobar aquí por si se llegara por otra vía.
+            if self._role_lower() not in ('administrador', 'sistemas'):
+                logging.warning(
+                    f"[SEGURIDAD] Intento de abrir Permisos Especiales con rol "
+                    f"'{self._role_lower()}' (usuario "
+                    f"{self.user_data.get('username', '?')})"
+                )
+                show_warning_dialog(
+                    self, "Acceso denegado",
+                    "Solo un administrador puede otorgar permisos especiales."
+                )
+                return
+
+            from ui.permisos_window import PermisosWindow
+
+            self.top_bar.set_title("PERMISOS ESPECIALES")
+            self.nav_bar.hide()
+
+            permisos_widget = PermisosWindow(self.pg_manager, self.user_data)
+            permisos_widget.cerrar_solicitado.connect(self.volver_a_administracion)
+
+            self.stacked_widget.addWidget(permisos_widget)
+            self.stacked_widget.setCurrentWidget(permisos_widget)
+
+            logging.info(
+                f"[OK] Permisos especiales abiertos por "
+                f"'{self.user_data.get('username', '?')}'"
+            )
+        except Exception as e:
+            logging.error(f"[ERROR] Error abriendo permisos especiales: {e}")
+            show_error_dialog(self, "Error",
+                              "No se pudo abrir el módulo de permisos.", str(e))
+
     def abrir_gestion_personal(self):
         """Abrir widget de gestión de personal"""
         try:
@@ -1662,6 +1855,7 @@ class MainPOSWindow(QMainWindow):
 
             # Agregar a lista de notificaciones activas
             self.notificaciones_activas.append(notificacion)
+            self._limitar_notificaciones_abiertas()
             logging.info(f"[MONITOR] Notificacion agregada a lista. Total activas ahora: {len(self.notificaciones_activas)}")
 
             # Mostrar
@@ -1728,14 +1922,51 @@ class MainPOSWindow(QMainWindow):
 
         notificacion.move(x, y)
     
+    def _limitar_notificaciones_abiertas(self):
+        """
+        Cerrar las notificaciones más antiguas cuando pasan del límite.
+
+        En horas punta las entradas llegan más rápido de lo que recepción las
+        cierra, y antes se apilaban sin tope: a partir de unas decenas la
+        máquina se arrastraba. Pasado el límite se cierran las más viejas, que
+        de todas formas ya nadie iba a leer. El registro de la entrada queda en
+        la base; esto solo descarta el aviso en pantalla.
+        """
+        maximo = MAX_NOTIFICACIONES_VISIBLES
+        sobrantes = len(self.notificaciones_activas) - maximo
+        if sobrantes <= 0:
+            return
+
+        logging.warning(
+            f"[MONITOR] {len(self.notificaciones_activas)} notificaciones abiertas, "
+            f"por encima del limite de {maximo}: se cierran las {sobrantes} mas antiguas."
+        )
+        for vieja in list(self.notificaciones_activas[:sobrantes]):
+            try:
+                vieja.close()          # dispara 'cerrado' -> remover_notificacion
+            except RuntimeError:
+                if vieja in self.notificaciones_activas:
+                    self.notificaciones_activas.remove(vieja)
+
     def remover_notificacion(self, notificacion):
-        """Remover notificación de la lista activa"""
+        """Quitar la notificación de la lista activa y destruirla."""
         id_entrada = getattr(notificacion, 'miembro_data', {}).get('id_entrada', '?')
         if notificacion in self.notificaciones_activas:
             self.notificaciones_activas.remove(notificacion)
             logging.info(f"[MONITOR] Notificacion removida (ID entrada: {id_entrada}). Activas restantes: {len(self.notificaciones_activas)}")
         else:
             logging.warning(f"[MONITOR] remover_notificacion: la notificacion (ID entrada: {id_entrada}) NO estaba en la lista activa (posible doble cierre).")
+
+        # Destruir el widget de verdad. Antes solo se quitaba la referencia de
+        # la lista, pero como se crean con parent=self, Qt los conservaba vivos
+        # toda la sesión: cerrar una notificación no liberaba nada. Medido,
+        # cada una ocupa ~2.3 MB, así que una jornada de entradas se comía
+        # cientos de megas sin que se viera ninguna ventana en pantalla.
+        try:
+            notificacion.deleteLater()
+        except RuntimeError:
+            # Ya estaba destruida (doble cierre): nada que hacer.
+            pass
     
     def closeEvent(self, event):
         """Evento al cerrar la ventana principal"""

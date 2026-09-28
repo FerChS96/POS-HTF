@@ -33,6 +33,7 @@ from ui.components import (
     aplicar_estilo_fecha
 )
 from database.postgres_manager import PostgresManager
+from database.permisos import INVENTARIO_ACTUALIZAR
 
 
 class MovimientoInventarioWindow(QWidget):
@@ -303,8 +304,55 @@ class MovimientoInventarioWindow(QWidget):
                 detail=str(e)
             )
     
+    def _id_usuario_actual(self):
+        """Id de quien opera la ventana, o None si no se conoce."""
+        user_data = getattr(self, 'user_data', None)
+        if isinstance(user_data, dict):
+            return user_data.get('id_usuario')
+        return None
+
+    def tiene_permiso_inventario(self):
+        """
+        Si quien opera puede registrar entradas y salidas de inventario.
+
+        'inventario.actualizar' SÍ es otorgable: un administrador puede
+        concedérselo a una recepcionista concreta. Ante cualquier duda (sin
+        user_data, sin id_usuario o con un error al consultar) se responde que
+        NO, para fallar cerrado.
+        """
+        id_usuario = self._id_usuario_actual()
+
+        if not id_usuario:
+            logging.warning(
+                "[SEGURIDAD] Movimiento de inventario sin datos de usuario: se deniega"
+            )
+            return False
+
+        try:
+            return bool(self.pg_manager.tiene_permiso(id_usuario, INVENTARIO_ACTUALIZAR))
+        except Exception as e:
+            logging.error(f"[SEGURIDAD] No se pudo verificar '{INVENTARIO_ACTUALIZAR}': {e}")
+            return False
+
     def registrar_movimiento(self):
         """Registrar el movimiento de inventario"""
+        # Control de acceso ANTES de tocar nada: sin permiso no hay movimiento.
+        if not self.tiene_permiso_inventario():
+            logging.warning(
+                f"[SEGURIDAD] Movimiento de inventario rechazado: usuario "
+                f"{self._id_usuario_actual()} sin permiso '{INVENTARIO_ACTUALIZAR}'"
+            )
+            show_error_dialog(
+                self,
+                "Permiso requerido",
+                "No tienes permiso para registrar movimientos de inventario",
+                detail=(
+                    "Se necesita el permiso 'Registrar entradas y salidas de "
+                    "inventario'. Solicítalo a un administrador."
+                )
+            )
+            return
+
         if not self.producto_seleccionado:
             show_warning_dialog(
                 self,
@@ -371,13 +419,23 @@ class MovimientoInventarioWindow(QWidget):
                 fecha_entrada = None
                 fecha_salida = datetime.now().isoformat()
             
+            # TODO: Estas dos operaciones (actualizar_stock y luego
+            # registrar_movimiento_inventario) NO son atómicas. Si la segunda
+            # falla o se cae la red entre ambas, el stock ya quedó modificado
+            # en la base pero no existe ningún movimiento que lo respalde: el
+            # inventario queda descuadrado y sin rastro de quién lo movió ni
+            # por qué. El arreglo correcto es una función RPC transaccional en
+            # Supabase que haga ambas cosas en una sola transacción. Queda
+            # fuera del alcance de este cambio (control de acceso).
+
             # Actualizar stock en inventario
             exito = self.pg_manager.actualizar_stock(
                 self.producto_seleccionado['codigo_interno'],
                 self.producto_seleccionado['tipo_producto'],
                 nuevo_stock,
                 fecha_entrada=fecha_entrada,
-                fecha_salida=fecha_salida
+                fecha_salida=fecha_salida,
+                id_usuario=self.user_data.get('id_usuario') if self.user_data else None
             )
             
             if not exito:

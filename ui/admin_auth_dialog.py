@@ -18,6 +18,11 @@ from ui.components import (
     ContentPanel
 )
 
+# Mensaje unico para cualquier fallo de credenciales. Deliberadamente NO
+# distingue entre "el usuario no existe" y "la contrasenia es incorrecta":
+# un mensaje distinto confirmaria a quien lo intenta que la cuenta existe.
+MENSAJE_CREDENCIALES_INVALIDAS = "Usuario o contraseña incorrectos"
+
 
 class AdminAuthDialog(QDialog):
     """Diálogo para solicitar autorización de administrador"""
@@ -28,6 +33,8 @@ class AdminAuthDialog(QDialog):
         self.motivo = motivo
         self.autorizado = False
         self.id_admin_autorizador = None
+        self.nombre_admin = None
+        self.justificacion = ""
         
         self.setWindowTitle("Autorización Requerida")
         self.setModal(True)
@@ -182,14 +189,17 @@ class AdminAuthDialog(QDialog):
             user = response.data[0] if response.data else None
             
             if not user:
-                from ui.components import show_error_dialog
-                show_error_dialog(self, "Error", "Usuario no encontrado o inactivo")
-                self.password_input.clear()
-                self.usuario_input.setFocus()
+                # Mismo trato que una contraseña incorrecta: no se revela que
+                # la cuenta no existe.
+                self._rechazar_credenciales(usuario, "usuario inexistente o inactivo")
                 return
             
             # Verificar que sea administrador o sistemas
             if user['rol'] not in ['administrador', 'sistemas']:
+                logging.warning(
+                    f"[SEGURIDAD] Autorización denegada a '{usuario}': "
+                    f"rol '{user['rol']}' no puede autorizar"
+                )
                 from ui.components import show_error_dialog
                 show_error_dialog(
                     self, 
@@ -200,28 +210,38 @@ class AdminAuthDialog(QDialog):
                 self.usuario_input.clear()
                 self.usuario_input.setFocus()
                 return
+            
+            # Verificar contraseña
+            password_hash = user['contrasenia'].encode('utf-8')
+            if bcrypt.checkpw(password.encode('utf-8'), password_hash):
+                # Autorización exitosa
+                self.autorizado = True
+                self.id_admin_autorizador = user['id_usuario']
+                self.justificacion = justificacion
+                self.nombre_admin = user['nombre_completo']
                 
-                # Verificar contraseña
-                password_hash = user['contrasenia'].encode('utf-8')
-                if bcrypt.checkpw(password.encode('utf-8'), password_hash):
-                    # Autorización exitosa
-                    self.autorizado = True
-                    self.id_admin_autorizador = user['id_usuario']
-                    self.justificacion = justificacion
-                    self.nombre_admin = user['nombre_completo']
-                    
-                    logging.info(f"Autorización concedida por {user['nombre_completo']} (ID: {user['id_usuario']})")
-                    self.accept()
-                else:
-                    from ui.components import show_error_dialog
-                    show_error_dialog(self, "Error", "Contraseña incorrecta")
-                    self.password_input.clear()
-                    self.password_input.setFocus()
-                
+                logging.info(f"[OK] Autorización concedida por {user['nombre_completo']} (ID: {user['id_usuario']})")
+                self.accept()
+            else:
+                self._rechazar_credenciales(usuario, "contraseña incorrecta")
+            
         except Exception as e:
             logging.error(f"Error verificando credenciales: {e}")
             from ui.components import show_error_dialog
             show_error_dialog(self, "Error", f"Error al verificar credenciales: {e}")
+    
+    def _rechazar_credenciales(self, usuario, motivo):
+        """
+        Rechazar un intento de autorización por credenciales inválidas.
+
+        El motivo real solo va al log; al usuario se le da siempre el mismo
+        mensaje y el mismo foco, para no delatar qué cuentas existen.
+        """
+        logging.warning(f"[SEGURIDAD] Autorización denegada a '{usuario}': {motivo}")
+        from ui.components import show_error_dialog
+        show_error_dialog(self, "Error", MENSAJE_CREDENCIALES_INVALIDAS)
+        self.password_input.clear()
+        self.password_input.setFocus()
     
     def get_autorizacion(self):
         """Obtener datos de la autorización"""

@@ -14,6 +14,12 @@
 --          candado de la fila; dos cajas simultaneas se serializan.
 --   Bug C: N+1 (5 round-trips por linea). Aqui todo es una sola llamada RPC.
 --
+-- NOTA sobre los ::tipo_*  Las columnas metodo_pago, tipo_venta, estado,
+--   tipo_producto y tipo_movimiento son ENUMS en el esquema, no texto. Sin la
+--   conversion explicita, Postgres rechaza el INSERT con
+--   'column X is of type Y but expression is of type text' y NINGUNA venta se
+--   registra. Se detecto probando la migracion en la base de QA.
+--
 -- NO ejecutar automaticamente. Aplicar desde el SQL Editor de Supabase.
 -- Ver migrations/README.md.
 -- =============================================================================
@@ -86,10 +92,10 @@ BEGIN
         COALESCE(p_descuento, 0),
         COALESCE(p_impuestos, 0),
         p_total,
-        COALESCE(p_metodo_pago, 'efectivo'),
+        COALESCE(p_metodo_pago, 'efectivo')::tipo_metodo_pago,
         p_referencia_pago,
-        COALESCE(p_tipo_venta, 'producto'),
-        'completada',
+        COALESCE(p_tipo_venta, 'producto')::tipo_venta,
+        'completada'::tipo_estado_venta,
         p_notas
     )
     RETURNING id_venta INTO v_id_venta;
@@ -146,7 +152,7 @@ BEGIN
            SET stock_actual        = stock_actual - v_cantidad,
                fecha_ultima_salida = now()
          WHERE codigo_interno = v_codigo
-           AND tipo_producto  = v_tipo
+           AND tipo_producto  = v_tipo::tipo_producto_fisico
            AND stock_actual  >= v_cantidad
         RETURNING stock_actual INTO v_stock_nuevo;
 
@@ -157,7 +163,7 @@ BEGIN
               INTO v_stock_anterior
               FROM inventario i
              WHERE i.codigo_interno = v_codigo
-               AND i.tipo_producto  = v_tipo
+               AND i.tipo_producto  = v_tipo::tipo_producto_fisico
              LIMIT 1;
 
             IF v_stock_anterior IS NULL THEN
@@ -187,7 +193,7 @@ BEGIN
             precio_unitario, subtotal_linea, descuento_linea,
             nombre_producto, descripcion_producto
         ) VALUES (
-            v_id_venta, v_codigo, v_tipo, v_cantidad,
+            v_id_venta, v_codigo, v_tipo::tipo_producto_detalle, v_cantidad,
             v_precio, v_subtotal_linea, v_desc_linea,
             v_nombre, v_descripcion
         );
@@ -197,7 +203,7 @@ BEGIN
             codigo_interno, tipo_producto, tipo_movimiento, cantidad,
             stock_anterior, stock_nuevo, id_usuario, id_venta, fecha, motivo
         ) VALUES (
-            v_codigo, v_tipo, 'venta', -v_cantidad,
+            v_codigo, v_tipo::tipo_producto_fisico, 'venta'::tipo_movimiento_inventario, -v_cantidad,
             v_stock_anterior, v_stock_nuevo, p_id_usuario, v_id_venta,
             COALESCE(p_fecha, now()),
             'Venta POS #' || v_id_venta

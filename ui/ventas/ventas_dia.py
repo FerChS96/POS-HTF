@@ -22,6 +22,7 @@ from ui.components import (
     create_page_layout,
     show_info_dialog,
     show_warning_dialog,
+    show_error_dialog,
     SectionTitle,
     ContentPanel
 )
@@ -141,6 +142,11 @@ class VentasDiaWindow(QWidget):
             )
             self.ventas_count.setText(str(num_ventas))
 
+            # Guardados para el ticket, para no volver a consultar al imprimir.
+            self.total_efectivo_valor = total_vendido
+            self.total_transferencia_valor = total_transferencia
+            self.num_ventas_valor = num_ventas
+
             logging.info(
                 f"Ventas turno {self.turno_id}: comandas={num_ventas}, "
                 f"total_efectivo=${total_vendido:.2f}, total_transferencia=${total_transferencia:.2f}"
@@ -164,116 +170,90 @@ class VentasDiaWindow(QWidget):
         dialog.exec()
             
     def imprimir_reporte(self):
-        """Imprimir reporte de ventas del turno"""
-        try:
-            if not self.turno_id:
-                show_warning_dialog(
-                    self,
-                    "Turno No Disponible",
-                    "No hay un turno de caja abierto."
-                )
-                return
-            
-            from datetime import datetime
-            import os
-            
-            # Verificar si openpyxl está disponible
-            try:
-                from openpyxl import Workbook
-                from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-            except ImportError:
-                show_warning_dialog(
-                    self,
-                    "Biblioteca requerida",
-                    "Para exportar a Excel necesitas instalar openpyxl",
-                    detail="Ejecuta: pip install openpyxl"
-                )
-                return
-            
-            # Obtener ventas del turno desde Supabase
-            response = self.pg_manager.client.table('ventas').select(
-                'id_venta, fecha, total, usuarios(nombre_completo)'
-            ).eq('id_turno', self.turno_id).eq('estado', 'completada').order('fecha', desc=True).execute()
-            
-            ventas = response.data or []
-            
-            # Crear libro de Excel
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Ventas del Día"
-            
-            # Estilos
-            header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
-            header_font = Font(bold=True, color="FFFFFF", size=12)
-            header_alignment = Alignment(horizontal="center", vertical="center")
-            
-            border = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
-            )
-            
-            # Encabezados
-            headers = ["ID Venta", "Fecha", "Hora", "Total", "Usuario"]
-            
-            for col, header in enumerate(headers, 1):
-                cell = ws.cell(row=1, column=col, value=header)
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = header_alignment
-                cell.border = border
-            
-            # Datos
-            for row, venta in enumerate(ventas, 2):
-                ws.cell(row=row, column=1, value=venta['id_venta']).border = border
-                
-                # Fecha
-                fecha = venta['fecha'].strftime("%d/%m/%Y") if isinstance(venta['fecha'], datetime) else str(venta['fecha'])
-                ws.cell(row=row, column=2, value=fecha).border = border
-                
-                # Hora
-                hora = venta['fecha'].strftime("%H:%M") if isinstance(venta['fecha'], datetime) else "N/A"
-                ws.cell(row=row, column=3, value=hora).border = border
-                
-                # Total
-                total_cell = ws.cell(row=row, column=4, value=venta['total'])
-                total_cell.number_format = '$#,##0.00'
-                total_cell.border = border
-                
-                # Usuario
-                ws.cell(row=row, column=5, value=venta.get('usuario', 'N/A')).border = border
-            
-            # Ajustar anchos de columna
-            ws.column_dimensions['A'].width = 12
-            ws.column_dimensions['B'].width = 15
-            ws.column_dimensions['C'].width = 10
-            ws.column_dimensions['D'].width = 15
-            ws.column_dimensions['E'].width = 25
-            
-            # Guardar archivo
-            fecha_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-            filename = os.path.join(desktop, f"ventas_turno_{self.turno_id}_{fecha_str}.xlsx")
-            
-            wb.save(filename)
-            
-            show_info_dialog(
-                self,
-                "Exportación completada",
-                f"El reporte de ventas del turno ha sido exportado exitosamente",
-                detail=f"Archivo guardado en:\n{filename}"
-            )
-            
-            logging.info(f"Ventas del turno {self.turno_id} exportadas: {filename}")
-            
-        except Exception as e:
-            logging.error(f"Error exportando datos: {e}")
+        """
+        Imprimir el resumen de ventas del turno en la impresora térmica.
+
+        Antes este botón, pese a llamarse "Imprimir" y llevar icono de
+        impresora, generaba un archivo de Excel en el Escritorio. Ahora imprime
+        de verdad. La exportación a Excel sigue existiendo en Historial de
+        Ventas, que es donde tiene sentido.
+        """
+        from services.printing.windows_printer_manager import (
+            TicketPrinterWindows,
+            WindowsPrinterManager,
+        )
+
+        if not self.turno_id:
             show_warning_dialog(
                 self,
-                "Error al exportar",
-                "No se pudo exportar el reporte de ventas",
-                detail=str(e)
+                "Turno No Disponible",
+                "No hay un turno de caja abierto."
+            )
+            return
+
+        try:
+            # Releer para no imprimir cifras viejas si hubo ventas mientras
+            # la pantalla estaba abierta.
+            self.actualizar_datos()
+
+            efectivo = float(getattr(self, 'total_efectivo_valor', 0.0) or 0.0)
+            transferencia = float(getattr(self, 'total_transferencia_valor', 0.0) or 0.0)
+
+            datos = {
+                'turno': self.turno_id,
+                'cajero': (self.user_data or {}).get('nombre_completo')
+                          or (self.user_data or {}).get('username', ''),
+                'fecha_hora': datetime.now().strftime('%d/%m/%Y %H:%M'),
+                'num_ventas': int(getattr(self, 'num_ventas_valor', 0) or 0),
+                'total_efectivo': efectivo,
+                'total_transferencia': transferencia,
+                'total_ventas': efectivo + transferencia,
+            }
+
+            nombre_impresora = WindowsPrinterManager.resolver_impresora()
+            if not nombre_impresora:
+                show_error_dialog(
+                    self,
+                    "Impresora no encontrada",
+                    "No se encontró la impresora de tickets.",
+                    "Instaladas: "
+                    + ", ".join(WindowsPrinterManager.obtener_impresoras_instaladas())
+                    + "\n\nConfigura TICKET_IMPRESORA en el archivo .env con el "
+                      "nombre exacto de la impresora."
+                )
+                return
+
+            impresora = TicketPrinterWindows(nombre_impresora)
+            try:
+                if impresora.conectar() and impresora.imprimir_corte(datos):
+                    logging.info(
+                        f"[OK] Resumen del turno {self.turno_id} impreso en {nombre_impresora}"
+                    )
+                    show_info_dialog(
+                        self,
+                        "Resumen impreso",
+                        f"Se imprimió el resumen del turno #{self.turno_id}.",
+                        f"Comandas: {datos['num_ventas']}\n"
+                        f"Total: ${datos['total_ventas']:.2f}"
+                    )
+                else:
+                    show_error_dialog(
+                        self,
+                        "Error de impresión",
+                        "No se pudo imprimir el resumen.",
+                        f"Impresora: {nombre_impresora}\n\n"
+                        "Verifica que esté encendida, con papel y conectada."
+                    )
+            finally:
+                impresora.desconectar()
+
+        except Exception as e:
+            logging.error(f"[ERROR] Error imprimiendo el resumen del turno: {e}")
+            show_error_dialog(
+                self,
+                "Error",
+                "Ocurrió un error al imprimir el resumen.",
+                str(e)
             )
 
 

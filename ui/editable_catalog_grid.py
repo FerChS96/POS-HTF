@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QBrush
 import logging
 
 from ui.components import WindowsPhoneTheme, TileButton, StyledLabel, show_info_dialog, show_warning_dialog, show_error_dialog, create_page_layout, ContentPanel, SearchBar
+from database.permisos import PRECIOS_ACTUALIZAR
 
 
 class EditableCatalogGrid(QWidget):
@@ -34,15 +35,49 @@ class EditableCatalogGrid(QWidget):
     
     catalogo_actualizado = Signal()
     
-    def __init__(self, postgres_manager, parent=None):
+    def __init__(self, postgres_manager, parent=None, user_data=None):
         super().__init__(parent)
         self.pg_manager = postgres_manager
+        # user_data es opcional para no romper a quien ya instancia el widget,
+        # pero sin él se asume que NO hay permiso de precios (fallar cerrado).
+        self.user_data = user_data
         self.productos_varios = []
         self.suplementos = []
         self.cambios_pendientes = {}  # {codigo_interno: {campo: valor_nuevo, ...}}
+        self.puede_editar_precios = self.tiene_permiso_precios()
         
         self.setup_ui()
         self.cargar_datos()
+    
+    def _id_usuario_actual(self):
+        """Id de quien tiene abierto el catálogo, o None si no se conoce."""
+        user_data = getattr(self, 'user_data', None)
+        if isinstance(user_data, dict):
+            return user_data.get('id_usuario')
+        return None
+
+    def tiene_permiso_precios(self):
+        """
+        Si quien usa el grid puede modificar 'precio_venta'.
+
+        'precios.actualizar' no es otorgable: solo lo traen administrador y
+        sistemas. Ante cualquier duda (sin user_data, sin id_usuario o con un
+        error al consultar) se responde que NO, para fallar cerrado.
+        """
+        id_usuario = self._id_usuario_actual()
+
+        if not id_usuario:
+            logging.warning(
+                "[SEGURIDAD] Catálogo abierto sin datos de usuario: "
+                "se deniega la edición de precios"
+            )
+            return False
+        
+        try:
+            return bool(self.pg_manager.tiene_permiso(id_usuario, PRECIOS_ACTUALIZAR))
+        except Exception as e:
+            logging.error(f"[SEGURIDAD] No se pudo verificar '{PRECIOS_ACTUALIZAR}': {e}")
+            return False
     
     def setup_ui(self):
         """Configurar interfaz del grid editable"""
@@ -420,8 +455,12 @@ class EditableCatalogGrid(QWidget):
             # Descripción (editable)
             tabla.setItem(row, 2, QTableWidgetItem(str(producto.get('descripcion', ''))))
             
-            # Precio (editable)
+            # Precio (editable solo con permiso 'precios.actualizar')
             item_precio = QTableWidgetItem(f"{float(producto.get('precio_venta', 0)):.2f}")
+            if not getattr(self, 'puede_editar_precios', False):
+                item_precio.setFlags(item_precio.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                item_precio.setToolTip("Solo administración puede modificar precios")
+                item_precio.setForeground(QBrush(QColor(WindowsPhoneTheme.TEXT_SECONDARY)))
             tabla.setItem(row, 3, item_precio)
             
             # Categoría (editable)
@@ -477,8 +516,12 @@ class EditableCatalogGrid(QWidget):
             # Tipo (editable)
             tabla.setItem(row, 3, QTableWidgetItem(str(suplemento.get('tipo', ''))))
             
-            # Precio (editable)
+            # Precio (editable solo con permiso 'precios.actualizar')
             item_precio = QTableWidgetItem(f"{float(suplemento.get('precio_venta', 0)):.2f}")
+            if not getattr(self, 'puede_editar_precios', False):
+                item_precio.setFlags(item_precio.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                item_precio.setToolTip("Solo administración puede modificar precios")
+                item_precio.setForeground(QBrush(QColor(WindowsPhoneTheme.TEXT_SECONDARY)))
             tabla.setItem(row, 4, item_precio)
             
             # Cantidad de Medida (editable)
@@ -603,7 +646,13 @@ class EditableCatalogGrid(QWidget):
         try:
             total_guardados = 0
             errores = []
-            
+            precios_omitidos = []
+
+            # El permiso se vuelve a consultar al guardar: no se confía en lo
+            # que se calculó al abrir la ventana.
+            puede_precios = self.tiene_permiso_precios()
+            self.puede_editar_precios = puede_precios
+
             for codigo, cambios in self.cambios_pendientes.items():
                 try:
                     # Determinar si es producto varios o suplemento
@@ -612,7 +661,22 @@ class EditableCatalogGrid(QWidget):
                         logging.warning(f"Se omite guardado de '{codigo}': no pertenece a productos varios (suplementos deshabilitados).")
                         continue
                     tabla_nombre = 'ca_productos_varios'
-                    
+
+                    # Control de acceso: el precio de venta solo lo cambia
+                    # administración. Se descarta SOLO ese campo; el resto de
+                    # los cambios del producto sí se guardan.
+                    if 'precio_venta' in cambios and not puede_precios:
+                        cambios.pop('precio_venta')
+                        precios_omitidos.append(codigo)
+                        logging.warning(
+                            f"[SEGURIDAD] Cambio de precio rechazado en '{codigo}': "
+                            f"usuario {self._id_usuario_actual()} sin permiso '{PRECIOS_ACTUALIZAR}'"
+                        )
+
+                    # Si lo único que se tocó fue el precio, no queda nada que guardar
+                    if not cambios:
+                        continue
+
                     # Convertir valores booleanos
                     for campo in ['activo']:
                         if campo in cambios:
@@ -626,6 +690,14 @@ class EditableCatalogGrid(QWidget):
                     if 'cantidad_medida' in cambios:
                         cambios['cantidad_medida'] = float(cambios['cantidad_medida']) if cambios['cantidad_medida'].strip() else None
                     
+                    # Sellar quien hace el cambio. Es lo que permite que la
+                    # auditoria responda "quien cambio este precio": la API REST
+                    # usa un pool de conexiones y no conserva variables de
+                    # sesion, asi que el trigger lee esta columna de la fila.
+                    id_operador = self._id_usuario_actual()
+                    if id_operador:
+                        cambios['actualizado_por'] = id_operador
+
                     # Actualizar en base de datos
                     self.pg_manager.client.table(tabla_nombre).update(cambios).eq('codigo_interno', codigo).execute()
                     total_guardados += 1
@@ -640,8 +712,17 @@ class EditableCatalogGrid(QWidget):
             self.cargar_datos()
             
             mensaje = f"Se guardaron {total_guardados} productos"
+            if precios_omitidos:
+                mensaje += (
+                    f"\n\nNO se aplicó el cambio de precio en "
+                    f"{len(precios_omitidos)} producto(s):\n"
+                    + "\n".join(precios_omitidos)
+                    + "\n\nSolo administración puede modificar precios de venta."
+                )
             if errores:
                 mensaje += f"\n\nErrores:\n" + "\n".join(errores)
+                show_warning_dialog(self, "Guardado parcial", mensaje)
+            elif precios_omitidos:
                 show_warning_dialog(self, "Guardado parcial", mensaje)
             else:
                 show_info_dialog(self, "Éxito", mensaje)

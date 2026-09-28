@@ -4,6 +4,11 @@
 create_test_user_recepcionista.py
 create_users_alexa_balbina.py
 
+# Volcados de la base de produccion para QA. Llevan datos reales de miembros
+# y ventas: NUNCA deben versionarse.
+qa_dump/
+supabase/.temp/
+
 # Logs y base local: se regeneran solos, no deben versionarse
 *.log
 pos_htf.txt
@@ -14,6 +19,10 @@ build/
 dist/
 build_onefile/
 *.spec
+# El spec del POS SI se versiona: define como se compila el .exe (que modulos
+# se empaquetan, que imports ocultos hacen falta). Sin el, la compilacion no
+# es reproducible.
+!HTF_Gimnasio_POS.spec
 *.exe
 
 # Python

@@ -607,7 +607,10 @@ class InventarioWindow(QWidget):
             layout.setContentsMargins(0, 0, 0, 0)
             
             # Crear grid editable
-            grid_editable = EditableCatalogGrid(self.pg_manager)
+            # user_data es obligatorio en la practica: sin el, la rejilla falla
+            # cerrado y nadie puede editar precios (necesita saber quien opera
+            # para comprobar el permiso PRECIOS_ACTUALIZAR).
+            grid_editable = EditableCatalogGrid(self.pg_manager, user_data=self.user_data)
             grid_editable.catalogo_actualizado.connect(self.cargar_inventario)
             
             layout.addWidget(grid_editable)

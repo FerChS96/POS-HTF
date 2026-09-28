@@ -151,7 +151,12 @@ class NotificacionEntradaWidget(QDialog):
         title.setStyleSheet("color: white; background-color: transparent;")
         header_layout.addWidget(title)
         
-        self.hora_label = QLabel(datetime.now().strftime("%H:%M:%S"))
+        # Hora de la ENTRADA, fija. Antes nacía con esta hora y un timer la
+        # sobrescribía cada segundo con el reloj actual: se perdía el único
+        # dato que importa (a qué hora entró la persona) y, al no cerrarse
+        # nunca las notificaciones, quedaban N relojes repintándose por
+        # segundo, que es lo que terminaba colgando la máquina.
+        self.hora_label = QLabel(self._hora_de_entrada())
         self.hora_label.setStyleSheet("color: white; font-size: 16px; font-weight: bold; background-color: transparent;")
         self.hora_label.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(self.hora_label)
@@ -421,9 +426,34 @@ class NotificacionEntradaWidget(QDialog):
         
         return f"{inicial_nombre}{inicial_apellido}"
     
+    def _hora_de_entrada(self):
+        """
+        Hora en que la persona entró, en formato legible.
+
+        Se toma de los datos de la entrada; si no vienen o no se entienden, se
+        usa la hora actual, que es cuando llegó el aviso.
+        """
+        crudo = self.miembro_data.get('hora_entrada') or self.miembro_data.get('fecha_entrada')
+        if crudo:
+            texto = str(crudo)
+            try:
+                return datetime.fromisoformat(
+                    texto.replace('Z', '+00:00')
+                ).strftime("%H:%M:%S")
+            except ValueError:
+                # Ya puede venir como "10:00" o "10:00:15"
+                if 3 <= len(texto) <= 8 and ':' in texto:
+                    return texto
+        return datetime.now().strftime("%H:%M:%S")
+
     def actualizar_tiempo(self):
-        """Actualizar etiqueta de tiempo transcurrido"""
-        self.hora_label.setText(datetime.now().strftime("%H:%M:%S"))
+        """
+        OBSOLETO: la hora mostrada es la de la entrada y no cambia.
+
+        Se conserva el método por si algo externo lo llama, pero ya no hay
+        ningún temporizador invocándolo.
+        """
+        return
     
     def showEvent(self, event):
         """Evento cuando se muestra el widget"""
@@ -435,8 +465,10 @@ class NotificacionEntradaWidget(QDialog):
         # Iniciar timer de auto-cierre solo si duracion > 0
         if self.duracion > 0:
             self.auto_close_timer.start(self.duracion)
-        
-        self.update_timer.start(1000)  # Actualizar cada segundo
+
+        # NO se arranca update_timer: la hora mostrada es la de la entrada y
+        # es fija. Cada notificación abierta con un timer de 1 segundo suponía
+        # un repintado por segundo, y como no se cerraban solas se acumulaban.
         
         logging.debug(f"Notificación de entrada mostrada para miembro ID: {self.miembro_data['id_miembro']}")
     

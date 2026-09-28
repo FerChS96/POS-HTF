@@ -282,7 +282,144 @@ class PostgresManager:
         except Exception as e:
             logging.error(f"Error al actualizar contraseña: {e}")
             return False
-    
+
+    # Roles validos del sistema. Es la unica fuente de verdad: la UI construye
+    # sus listas desde aqui, para que no se pueda crear un rol inventado que
+    # despues no coincida con ninguna comprobacion.
+    ROLES_VALIDOS = ('administrador', 'sistemas', 'recepcionista')
+    ROLES_ADMINISTRATIVOS = ('administrador', 'sistemas')
+
+    def get_users(self, incluir_inactivos: bool = True) -> List[Dict]:
+        """
+        Listar usuarios del sistema.
+
+        NUNCA devuelve el hash de la contraseña: la UI no lo necesita y no debe
+        tenerlo a mano.
+
+        Args:
+            incluir_inactivos: si es False, solo devuelve los activos.
+
+        Returns:
+            Lista de usuarios ordenada por id_usuario.
+        """
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            consulta = self.client.table('usuarios').select(
+                'id_usuario, nombre_usuario, nombre_completo, rol, activo, '
+                'fecha_creacion, ultimo_acceso'
+            )
+            if not incluir_inactivos:
+                consulta = consulta.eq('activo', True)
+
+            return consulta.order('id_usuario').execute().data or []
+        except Exception as e:
+            logging.error(f"[ERROR] Error listando usuarios: {e}")
+            return []
+
+    def contar_administradores_activos(self, excluir_id: Optional[int] = None) -> int:
+        """
+        Cuantas cuentas administrativas activas quedan.
+
+        Sirve para no dejar el sistema sin nadie que pueda administrarlo: antes
+        de desactivar o degradar a un administrador se comprueba que no sea el
+        ultimo.
+
+        Args:
+            excluir_id: id que no se cuenta (el usuario que se esta por cambiar).
+        """
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            respuesta = self.client.table('usuarios').select(
+                'id_usuario'
+            ).eq('activo', True).in_('rol', list(self.ROLES_ADMINISTRATIVOS)).execute()
+
+            filas = respuesta.data or []
+            if excluir_id is not None:
+                filas = [f for f in filas if f['id_usuario'] != excluir_id]
+            return len(filas)
+        except Exception as e:
+            logging.error(f"[ERROR] Error contando administradores: {e}")
+            # Ante la duda, informar que hay varios seria peligroso: se responde
+            # 0 para que el llamador bloquee el cambio en lugar de permitirlo.
+            return 0
+
+    def update_user(self, id_usuario: int, nombre_completo: Optional[str] = None,
+                    rol: Optional[str] = None, activo: Optional[bool] = None) -> bool:
+        """
+        Actualizar nombre, rol y/o estado de un usuario.
+
+        No toca la contraseña (para eso esta update_user_password) ni permite
+        cambiar el nombre de usuario, que es la llave con la que entra.
+
+        Returns:
+            True si se actualizo, False si no habia nada que cambiar o fallo.
+        """
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            cambios: Dict[str, Any] = {}
+            if nombre_completo is not None:
+                cambios['nombre_completo'] = nombre_completo.strip()
+            if rol is not None:
+                if rol not in self.ROLES_VALIDOS:
+                    logging.error(f"[ERROR] Rol no valido: {rol!r}")
+                    return False
+                cambios['rol'] = rol
+            if activo is not None:
+                cambios['activo'] = bool(activo)
+
+            if not cambios:
+                logging.warning("update_user llamado sin cambios")
+                return False
+
+            respuesta = self.client.table('usuarios').update(cambios).eq(
+                'id_usuario', id_usuario
+            ).execute()
+
+            if respuesta.data:
+                logging.info(f"[OK] Usuario {id_usuario} actualizado: {list(cambios)}")
+                return True
+
+            logging.error(f"[ERROR] No se pudo actualizar el usuario {id_usuario}")
+            return False
+        except Exception as e:
+            logging.error(f"[ERROR] Error actualizando usuario {id_usuario}: {e}")
+            return False
+
+    def update_user_password_by_id(self, id_usuario: int, new_password: str) -> bool:
+        """
+        Cambiar la contraseña por id, sin depender del nombre de usuario.
+
+        Returns:
+            True si se actualizo correctamente.
+        """
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            hash_nuevo = bcrypt.hashpw(
+                new_password.encode('utf-8'), bcrypt.gensalt()
+            ).decode('utf-8')
+
+            respuesta = self.client.table('usuarios').update(
+                {'contrasenia': hash_nuevo}
+            ).eq('id_usuario', id_usuario).execute()
+
+            if respuesta.data:
+                logging.info(f"[OK] Contraseña actualizada para el usuario {id_usuario}")
+                return True
+
+            logging.error(f"[ERROR] No se pudo cambiar la contraseña del usuario {id_usuario}")
+            return False
+        except Exception as e:
+            logging.error(f"[ERROR] Error cambiando contraseña del usuario {id_usuario}: {e}")
+            return False
+
     # ========== PRODUCTOS ==========
 
     def _is_missing_table_error(self, error: Exception, table_name: str) -> bool:
@@ -1845,7 +1982,8 @@ class PostgresManager:
             return []
     
     def actualizar_stock(self, codigo_interno: str, tipo_producto: str, nuevo_stock: int, 
-                        fecha_entrada: str = None, fecha_salida: str = None) -> bool:
+                        fecha_entrada: str = None, fecha_salida: str = None,
+                        id_usuario: Optional[int] = None) -> bool:
         """Actualizar stock en la tabla inventario
         
         Args:
@@ -1863,6 +2001,12 @@ class PostgresManager:
                 self.connect()
             
             update_data = {'stock_actual': nuevo_stock}
+
+            # Sella quien mueve el stock para que la auditoria pueda decirlo.
+            # La API REST no conserva variables de sesion, asi que el trigger
+            # de auditoria lee esta columna de la propia fila.
+            if id_usuario:
+                update_data['actualizado_por'] = id_usuario
             
             if fecha_entrada:
                 update_data['fecha_ultima_entrada'] = fecha_entrada
@@ -2759,6 +2903,335 @@ class PostgresManager:
         except Exception as e:
             logging.error(f"Error actualizando pago del recargo {id_recargo}: {e}")
             return False
+
+
+    # ========== PERMISOS ==========
+    #
+    # Modelo:   permisos efectivos = permisos base del rol + permisos otorgados
+    #
+    # El catálogo (qué permisos existen, qué trae cada rol y cuáles se pueden
+    # conceder de forma puntual) vive en database/permisos.py y es el contrato
+    # compartido con la UI y con las pruebas. Aquí NO se escribe ninguna cadena
+    # de permiso a mano.
+    #
+    # La tabla `permisos_usuario` la crea migrations/003_permisos.sql, que se
+    # aplica a mano desde el SQL Editor de Supabase. Mientras no esté aplicada,
+    # todos estos métodos siguen funcionando: avisan una sola vez y trabajan
+    # solo con los permisos del rol. Nadie se queda fuera del sistema por una
+    # migración pendiente.
+
+    @staticmethod
+    def _catalogo_permisos():
+        """
+        Módulo database.permisos (el contrato compartido).
+
+        Se importa aquí dentro, y no en la cabecera del archivo, para que esta
+        sección quede autocontenida. Python cachea el módulo: repetir el import
+        no cuesta nada.
+        """
+        from database import permisos as catalogo
+        return catalogo
+
+    def _es_tabla_permisos_ausente(self, error: Exception) -> bool:
+        """True si el error es 'permisos_usuario no está en el schema cache'."""
+        return self._is_missing_table_error(error, 'permisos_usuario')
+
+    def _avisar_tabla_permisos_ausente(self) -> None:
+        """Avisar UNA sola vez que falta aplicar migrations/003_permisos.sql."""
+        # getattr con respaldo: la bandera se crea sola la primera vez, así el
+        # método funciona aunque la instancia se haya construido sin ella.
+        if not getattr(self, '_missing_permisos_logged', False):
+            logging.warning(
+                "Tabla 'permisos_usuario' no existe todavía; falta aplicar "
+                "migrations/003_permisos.sql. Se usarán solo los permisos del rol."
+            )
+            self._missing_permisos_logged = True
+
+    def get_permisos_otorgados(self, id_usuario: int) -> List[str]:
+        """
+        Permisos vigentes concedidos de forma puntual a una persona.
+
+        NO incluye los del rol; para eso está get_permisos_efectivos.
+
+        Returns:
+            Lista de identificadores de permiso. Vacía si no le otorgaron nada,
+            si la tabla aún no existe o si la consulta falla. Nunca lanza.
+        """
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            respuesta = (
+                self.client.table('permisos_usuario')
+                .select('permiso')
+                .eq('id_usuario', id_usuario)
+                .eq('activo', True)
+                .execute()
+            )
+            return [f['permiso'] for f in (respuesta.data or []) if f.get('permiso')]
+        except Exception as e:
+            if self._es_tabla_permisos_ausente(e):
+                self._avisar_tabla_permisos_ausente()
+                return []
+            logging.error(
+                f"[ERROR] Error leyendo permisos otorgados del usuario {id_usuario}: {e}"
+            )
+            return []
+
+    def get_permisos_efectivos(self, id_usuario: int) -> frozenset:
+        """
+        Permisos reales de una persona: los de su rol más los que le otorgaron.
+
+        Son dos lecturas en total: una a `usuarios` (para el rol) y otra a
+        `permisos_usuario`. El cruce lo hace permisos_efectivos() del contrato,
+        que IGNORA cualquier otorgado fuera de OTORGABLES: una fila manipulada
+        en la base con 'precios.actualizar' no concede nada.
+
+        Si la tabla de permisos no existe todavía, devuelve los del rol.
+
+        Returns:
+            frozenset de identificadores. Vacío si el usuario no existe o si no
+            se pudo leer su rol (ante la duda, no se concede nada).
+        """
+        catalogo = self._catalogo_permisos()
+
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            respuesta = (
+                self.client.table('usuarios')
+                .select('rol')
+                .eq('id_usuario', id_usuario)
+                .limit(1)
+                .execute()
+            )
+            filas = respuesta.data or []
+            if not filas:
+                logging.error(
+                    f"[ERROR] El usuario {id_usuario} no existe: se le niegan todos los permisos."
+                )
+                return frozenset()
+            rol = filas[0].get('rol')
+        except Exception as e:
+            logging.error(f"[ERROR] Error leyendo el rol del usuario {id_usuario}: {e}")
+            return frozenset()
+
+        return catalogo.permisos_efectivos(rol, self.get_permisos_otorgados(id_usuario))
+
+    def tiene_permiso(self, id_usuario: int, permiso: str) -> bool:
+        """
+        Si una persona puede hacer algo. Es la puerta que usa el resto del POS.
+
+        Ante cualquier duda (usuario inexistente, corte de red) devuelve False:
+        se prefiere negar de más que conceder de más.
+        """
+        return permiso in self.get_permisos_efectivos(id_usuario)
+
+    def otorgar_permiso(self, id_usuario: int, permiso: str, otorgado_por: int,
+                        notas: Optional[str] = None) -> bool:
+        """
+        Conceder un permiso puntual a una persona.
+
+        RECHAZA todo lo que no esté en OTORGABLES. `precios.actualizar`,
+        `usuarios.gestionar`, `permisos.gestionar` y `caja.cerrar_fuera_horario`
+        quedan atados a su rol y no se pueden regalar desde aquí; el intento se
+        registra con logging.error y el motivo por escrito.
+
+        Si ya existía una fila para esa persona y ese permiso (por ejemplo,
+        revocada antes), se REACTIVA en vez de duplicarse.
+
+        Args:
+            id_usuario:   a quién se le concede.
+            permiso:      constante de database/permisos.py.
+            otorgado_por: id del administrador que lo concede.
+            notas:        por qué se otorgó. Si es None al reactivar, se
+                          conservan las notas anteriores.
+
+        Returns:
+            True si el permiso quedó vigente.
+        """
+        catalogo = self._catalogo_permisos()
+
+        # --- Primera defensa: la lista blanca --------------------------------
+        # La segunda está en permisos_efectivos() y la tercera en el CHECK de
+        # migrations/003_permisos.sql.
+        if not catalogo.es_otorgable(permiso):
+            motivo = catalogo.motivo_no_otorgable(permiso)
+            detalle = motivo or "no está en la lista de permisos otorgables."
+            logging.error(
+                f"[ERROR] '{permiso}' no se puede otorgar de forma puntual: {detalle} "
+                f"(intento sobre el usuario {id_usuario} por parte del usuario {otorgado_por})"
+            )
+            return False
+
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            # ¿Ya hay una fila para esta persona y este permiso? La llave única
+            # (id_usuario, permiso) garantiza que sea a lo más una.
+            existente = (
+                self.client.table('permisos_usuario')
+                .select('activo')
+                .eq('id_usuario', id_usuario)
+                .eq('permiso', permiso)
+                .limit(1)
+                .execute()
+            ).data or []
+
+            if existente:
+                cambios = {
+                    'activo': True,
+                    'otorgado_por': otorgado_por,
+                    'fecha_otorgado': datetime.now().isoformat(),
+                }
+                if notas is not None:
+                    cambios['notas'] = notas
+
+                (
+                    self.client.table('permisos_usuario')
+                    .update(cambios)
+                    .eq('id_usuario', id_usuario)
+                    .eq('permiso', permiso)
+                    .execute()
+                )
+                logging.info(
+                    f"[OK] Permiso '{permiso}' reactivado para el usuario {id_usuario} "
+                    f"por el usuario {otorgado_por}"
+                )
+                return True
+
+            # fecha_otorgado la pone la base (hora de Ciudad de México).
+            self.client.table('permisos_usuario').insert({
+                'id_usuario': id_usuario,
+                'permiso': permiso,
+                'otorgado_por': otorgado_por,
+                'activo': True,
+                'notas': notas,
+            }).execute()
+
+            logging.info(
+                f"[OK] Permiso '{permiso}' otorgado al usuario {id_usuario} "
+                f"por el usuario {otorgado_por}"
+            )
+            return True
+        except Exception as e:
+            if self._es_tabla_permisos_ausente(e):
+                self._avisar_tabla_permisos_ausente()
+                logging.error(
+                    f"[ERROR] No se pudo otorgar '{permiso}' al usuario {id_usuario}: "
+                    "falta aplicar migrations/003_permisos.sql."
+                )
+                return False
+            logging.error(
+                f"[ERROR] Error otorgando '{permiso}' al usuario {id_usuario}: {e}"
+            )
+            return False
+
+    def revocar_permiso(self, id_usuario: int, permiso: str) -> bool:
+        """
+        Quitar un permiso otorgado.
+
+        Pone `activo = False`; NUNCA borra la fila. El rastro de quién lo
+        concedió, cuándo y por qué se conserva: es justo lo que hace falta
+        cuando alguien pregunta después.
+
+        Returns:
+            True si había una fila que revocar.
+        """
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            respuesta = (
+                self.client.table('permisos_usuario')
+                .update({'activo': False})
+                .eq('id_usuario', id_usuario)
+                .eq('permiso', permiso)
+                .execute()
+            )
+            if respuesta.data:
+                logging.info(
+                    f"[OK] Permiso '{permiso}' revocado al usuario {id_usuario}"
+                )
+                return True
+
+            logging.info(
+                f"El usuario {id_usuario} no tenía otorgado '{permiso}': nada que revocar."
+            )
+            return False
+        except Exception as e:
+            if self._es_tabla_permisos_ausente(e):
+                self._avisar_tabla_permisos_ausente()
+                return False
+            logging.error(
+                f"[ERROR] Error revocando '{permiso}' al usuario {id_usuario}: {e}"
+            )
+            return False
+
+    def get_usuarios_con_permisos(self) -> List[Dict]:
+        """
+        Padrón para la pantalla de permisos especiales.
+
+        Son DOS consultas en total, no una por usuario: se traen todos los
+        permisos vigentes de golpe y se agrupan en memoria.
+
+        Returns:
+            Lista de usuarios ordenada por id_usuario. Cada uno trae sus datos
+            básicos más:
+                permisos_otorgados -> lista ordenada de los concedidos vigentes
+                permisos_efectivos -> lista ordenada de rol + otorgados
+            Si la tabla de permisos no existe, las listas de otorgados salen
+            vacías y los efectivos son los del rol.
+        """
+        catalogo = self._catalogo_permisos()
+
+        try:
+            if not self.is_connected:
+                self.connect()
+
+            usuarios = (
+                self.client.table('usuarios')
+                .select('id_usuario, nombre_usuario, nombre_completo, rol, activo')
+                .order('id_usuario')
+                .execute()
+            ).data or []
+        except Exception as e:
+            logging.error(
+                f"[ERROR] Error listando usuarios para la pantalla de permisos: {e}"
+            )
+            return []
+
+        otorgados_por_usuario: Dict[Any, List[str]] = {}
+        try:
+            filas = (
+                self.client.table('permisos_usuario')
+                .select('id_usuario, permiso')
+                .eq('activo', True)
+                .execute()
+            ).data or []
+            for fila in filas:
+                permiso = fila.get('permiso')
+                if permiso:
+                    otorgados_por_usuario.setdefault(fila.get('id_usuario'), []).append(permiso)
+        except Exception as e:
+            if self._es_tabla_permisos_ausente(e):
+                self._avisar_tabla_permisos_ausente()
+            else:
+                logging.error(f"[ERROR] Error leyendo los permisos otorgados: {e}")
+
+        resultado: List[Dict] = []
+        for usuario in usuarios:
+            otorgados = otorgados_por_usuario.get(usuario.get('id_usuario'), [])
+            fila = dict(usuario)
+            fila['permisos_otorgados'] = sorted(otorgados)
+            fila['permisos_efectivos'] = sorted(
+                catalogo.permisos_efectivos(usuario.get('rol'), otorgados)
+            )
+            resultado.append(fila)
+
+        return resultado
 
 
 # Ejemplo de uso
