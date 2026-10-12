@@ -122,14 +122,17 @@ class AsignarLockerWindow(QWidget):
         layout.addLayout(button_layout)
     
     def cargar_asignaciones(self):
-        """Cargar asignaciones activas de lockers mensuales (id_producto_digital = 9)"""
+        """Cargar asignaciones vigentes de lockers mensuales (id_producto_digital = 9)"""
         try:
-            # Consultar asignaciones activas de lockers mensuales
+            # Solo vigentes: `activa` no se apaga sola al vencer (nadie corre la desactivación),
+            # así que también se filtra por fecha_fin y por cancelada.
             response = self.pg_manager.client.table('asignaciones_activas').select(
                 'id_asignacion, id_miembro, id_locker, fecha_inicio, fecha_fin, activa, '
                 'miembros(nombres, apellido_paterno, apellido_materno), '
                 'lockers(numero, ubicacion, tipo)'
-            ).eq('id_producto_digital', 9).eq('activa', True).order('fecha_fin').execute()
+            ).eq('id_producto_digital', 9).eq('activa', True).eq('cancelada', False).gte(
+                'fecha_fin', date.today().isoformat()
+            ).order('fecha_fin').execute()
             
             self.asignaciones_data = response.data or []
             self.cambios_pendientes = {}
@@ -237,10 +240,12 @@ class AsignarLockerWindow(QWidget):
             
             todos_lockers = response_todos.data or []
             
-            # Obtener IDs de lockers ya asignados (activos)
+            # Obtener IDs de lockers ya asignados (vigentes; un locker vencido queda libre)
             response_asignados = self.pg_manager.client.table('asignaciones_activas').select(
                 'id_locker'
-            ).eq('id_producto_digital', 9).eq('activa', True).execute()
+            ).eq('id_producto_digital', 9).eq('activa', True).eq('cancelada', False).gte(
+                'fecha_fin', date.today().isoformat()
+            ).execute()
             
             ids_asignados = {item['id_locker'] for item in (response_asignados.data or [])}
             
