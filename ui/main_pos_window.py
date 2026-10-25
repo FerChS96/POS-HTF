@@ -326,9 +326,9 @@ class MainPOSWindow(QMainWindow):
         layout = create_page_layout("PUNTO DE VENTA")
         page.setLayout(layout)
         
-        # Grid de tiles - 2 filas x 2 columnas
+        # Grid de tiles - 2 filas: dos arriba, Cierre de Caja a lo ancho abajo
         grid = create_tile_grid_layout()
-        
+
         # Botones de acciones usando componente TileButton
         btn_nueva_venta = TileButton("Nueva Venta", "fa5s.cash-register", WindowsPhoneTheme.TILE_RED)
         btn_nueva_venta.clicked.connect(self.abrir_nueva_venta)
@@ -338,13 +338,9 @@ class MainPOSWindow(QMainWindow):
         btn_ventas_dia.clicked.connect(self.abrir_ventas_dia)
         grid.addWidget(btn_ventas_dia, 0, 1)
         
-        btn_escanear_pago = TileButton("Escanear Código\nPago", "mdi.qrcode-scan", WindowsPhoneTheme.TILE_GREEN)
-        btn_escanear_pago.clicked.connect(self.escanear_codigo_pago)
-        grid.addWidget(btn_escanear_pago, 1, 0)
-        
         btn_cierre = TileButton("Cierre de Caja", "fa5s.lock", WindowsPhoneTheme.TILE_MAGENTA)
         btn_cierre.clicked.connect(self.abrir_cierre_caja)
-        grid.addWidget(btn_cierre, 1, 1)
+        grid.addWidget(btn_cierre, 1, 0, 1, 2)
         
         layout.addLayout(grid)
         layout.addStretch()
@@ -983,161 +979,6 @@ class MainPOSWindow(QMainWindow):
         except Exception as e:
             logging.error(f"Error abriendo cierre de caja: {e}")
     
-    def escanear_codigo_pago(self):
-        """Abrir diálogo para confirmar pago en efectivo escaneando ID venta"""
-        try:
-            from ui.confirmar_pago_efectivo_dialog import ConfirmarPagoEfectivoDialog
-            
-            # Crear y mostrar diálogo simple de escaneo
-            dialogo = ConfirmarPagoEfectivoDialog(
-                self.supabase_service,
-                pg_manager=self.pg_manager,
-                user_data=self.user_data,
-                parent=self
-            )
-            
-            dialogo.exec()
-            
-        except Exception as e:
-            logging.error(f"Error abriendo ventana de pagos: {e}")
-            show_error_dialog(
-                self,
-                "Error",
-                f"Error al abrir escaner:\n{str(e)}"
-            )
-    
-    
-    def debug_procesar_pago(self, dialog):
-        """Procesar pago desde el diálogo de debug"""
-        codigo = self.debug_scan_input.text().strip()
-        
-        if not codigo:
-            show_warning_dialog(
-                self,
-                "Código vacío",
-                "Por favor escanee o ingrese un código de pago"
-            )
-            return
-        
-        try:
-            # Normalizar el código usando regex (maneja CASH' CASH_ CASH 506, etc.)
-            import re
-            codigo_original = codigo.strip()
-            codigo_upper = codigo_original.upper()
-            match = re.match(r'CASH[^\d]*(\d+)', codigo_upper)
-            if match:
-                numero = match.group(1)
-                codigo_normalizado = f"CASH-{numero}"
-                logging.info(f"[DEBUG] ✓ Regex matched: CASH + [{codigo_upper[4]}] + {numero} = {codigo_normalizado}")
-            else:
-                codigo_normalizado = codigo_upper
-                logging.info(f"[DEBUG] ✗ Regex NO matched para: {codigo_original}")
-            logging.info(f"[DEBUG] Código original: {codigo_original} → Normalizado: {codigo_normalizado}")
-            
-            notif = None
-            
-            # Buscar en Supabase
-            if self.supabase_service:
-                logging.info(f"[DEBUG] Buscando en Supabase...")
-                response = self.supabase_service.client.table('notificaciones_pos') \
-                    .select('*, miembros(nombres, apellido_paterno, apellido_materno, telefono)') \
-                    .eq('codigo_pago_generado', codigo_normalizado) \
-                    .eq('respondida', False) \
-                    .execute()
-                
-                if response.data and len(response.data) > 0:
-                    item = response.data[0]
-                    miembro = item.get('miembros') or {}
-                    
-                    notif = {
-                        'id_notificacion': item['id_notificacion'],
-                        'id_miembro': item['id_miembro'],
-                        'tipo_notificacion': item['tipo_notificacion'],
-                        'asunto': item['asunto'],
-                        'monto_pendiente': item.get('monto_pendiente'),
-                        'codigo_pago_generado': item.get('codigo_pago_generado'),
-                        'nombres': miembro.get('nombres', ''),
-                        'apellido_paterno': miembro.get('apellido_paterno', ''),
-                        'apellido_materno': miembro.get('apellido_materno', '')
-                    }
-                    logging.info(f"[DEBUG] ✓ Notificación encontrada: {notif['id_notificacion']}")
-                else:
-                    logging.info(f"[DEBUG] ✗ No se encontró notificación pendiente con código: {codigo_normalizado}")
-            else:
-                # Fallback a PostgreSQL
-                logging.info(f"[DEBUG] Buscando en PostgreSQL...")
-                result = self.pg_manager.client.table('notificaciones_pos').select(
-                    'id_notificacion,id_miembro,tipo_notificacion,asunto,monto_pendiente,codigo_pago_generado,respondida,miembros(nombres,apellido_paterno,apellido_materno)'
-                ).eq('codigo_pago_generado', codigo_normalizado).eq('respondida', False).execute()
-                
-                if result.data:
-                    datos = result.data[0]
-                    miembro = datos.get('miembros') or {}
-                    notif = {
-                        'id_notificacion': datos['id_notificacion'],
-                        'id_miembro': datos['id_miembro'],
-                        'tipo_notificacion': datos['tipo_notificacion'],
-                        'asunto': datos['asunto'],
-                        'monto_pendiente': datos.get('monto_pendiente'),
-                        'codigo_pago_generado': datos['codigo_pago_generado'],
-                        'nombres': miembro.get('nombres', ''),
-                        'apellido_paterno': miembro.get('apellido_paterno', ''),
-                        'apellido_materno': miembro.get('apellido_materno', '')
-                    }
-                    logging.info(f"[DEBUG] ✓ Notificación encontrada: {notif['id_notificacion']}")
-                else:
-                    logging.info(f"[DEBUG] ✗ No se encontró notificación pendiente con código: {codigo_normalizado}")
-            
-            if notif:
-                logging.info(f"[DEBUG] Abriendo modal de detalles de notificación...")
-                # Cerrar el diálogo de debug primero
-                dialog.accept()
-                
-                # Usar el nuevo NotificationDetailModal
-                from ui.notification_detail_modal import NotificationDetailModal
-                detail_modal = NotificationDetailModal(
-                    notif, 
-                    self.pg_manager, 
-                    self.supabase_service, 
-                    self.user_data, 
-                    parent=self,
-                    sync_manager=getattr(self, 'sync_manager', None)
-                )
-                detail_modal.notificacion_procesada.connect(self._on_notificacion_procesada_debug)
-                result = detail_modal.exec()
-                
-                if result:
-                    logging.info(f"[DEBUG] ✓ Notificación procesada exitosamente")
-                    show_success_dialog(
-                        self,
-                        "Notificación Procesada",
-                        f"Notificación procesada para:\n{notif['nombres']} {notif['apellido_paterno']} {notif['apellido_materno']}\n\nCódigo: {codigo_normalizado}"
-                    )
-                else:
-                    logging.info(f"[DEBUG] Usuario canceló el procesamiento")
-            else:
-                logging.info(f"[DEBUG] ✗ Código no encontrado: {codigo_normalizado}")
-                show_warning_dialog(
-                    self,
-                    "Código No Encontrado",
-                    f"No se encontró notificación pendiente con:\n{codigo_normalizado}"
-                )
-                
-        except Exception as e:
-            logging.error(f"[DEBUG] Error procesando pago: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
-            show_error_dialog(
-                self,
-                "Error",
-                f"Error procesando pago:\n{str(e)}"
-            )
-    
-    def _on_notificacion_procesada_debug(self, datos_notificacion):
-        """Callback cuando se procesa una notificación desde el debug modal"""
-        logging.info(f"[DEBUG] Notificación procesada: {datos_notificacion}")
-        # Aquí se pueden actualizar contadores, actualizar UI, etc.
-            
     def volver_a_ventas(self):
         """Volver a la página principal de ventas"""
         # Restaurar título
