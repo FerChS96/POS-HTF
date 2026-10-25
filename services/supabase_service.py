@@ -406,11 +406,13 @@ class SupabaseService:
             
             total = total_response.count if total_response.count is not None else 0
             
-            # Lockers ocupados en asignaciones_activas (solo productos 9 y 19)
+            # Lockers ocupados en asignaciones_activas (solo productos 9 y 19, vigentes:
+            # `activa` no se apaga sola al vencer, así que también se filtra por fecha_fin)
             occupied_response = self.client.table('asignaciones_activas')\
                 .select('id_locker', count='exact')\
                 .eq('activa', True)\
                 .eq('cancelada', False)\
+                .gte('fecha_fin', str(date.today()))\
                 .not_.is_('id_locker', 'null')\
                 .in_('id_producto_digital', [9, 19])\
                 .execute()
