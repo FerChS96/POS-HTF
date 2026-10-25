@@ -8,11 +8,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLineEdit, QTextEdit,
     QLabel, QComboBox, QDateEdit, QScrollArea,
-    QFrame, QSizePolicy
+    QFrame, QSizePolicy, QListWidget, QListWidgetItem
 )
 from PySide6.QtCore import Qt, Signal, QDate, QEvent, QTimer
 from PySide6.QtGui import QFont
 import logging
+import re
+import time
 from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -34,6 +36,10 @@ from ui.components import (
 )
 from database.postgres_manager import PostgresManager
 from database.permisos import INVENTARIO_ACTUALIZAR
+from utils.detector_escaner import DetectorEscaner
+
+# Resultados que se muestran al buscar por nombre; más no caben ni sirven.
+MAX_RESULTADOS = 30
 
 
 class MovimientoInventarioWindow(QWidget):
@@ -50,11 +56,13 @@ class MovimientoInventarioWindow(QWidget):
         self.user_data = user_data
         self.producto_seleccionado = None
         
-        # Timer para detectar entrada del escáner
+        # El escáner busca solo; a mano se busca con el botón o con Enter.
+        # El timer cubre los escáneres que no mandan Enter al terminar.
+        self.detector = DetectorEscaner()
         self.scanner_timer = QTimer()
         self.scanner_timer.setSingleShot(True)
-        self.scanner_timer.setInterval(300)  # 300ms después de que deje de escribir
-        self.scanner_timer.timeout.connect(self.buscar_producto)
+        self.scanner_timer.setInterval(150)
+        self.scanner_timer.timeout.connect(self._fin_de_rafaga)
         
         self.setup_ui()
     
@@ -111,13 +119,27 @@ class MovimientoInventarioWindow(QWidget):
         search_label = StyledLabel("Buscar Producto", bold=True, size=WindowsPhoneTheme.FONT_SIZE_SUBTITLE)
         panel_layout.addWidget(search_label)
         
-        self.search_bar = SearchBar("Código interno o código de barras...")
+        self.search_bar = SearchBar("Nombre o código, o escanea el producto...")
         self.search_bar.search_input.installEventFilter(self)
-        self.search_bar.search_input.returnPressed.connect(self.buscar_producto)
-        self.search_bar.search_input.textChanged.connect(self._on_search_text_changed)
-        self.search_bar.search_button.clicked.connect(self.buscar_producto)
+        self.search_bar.search_button.clicked.connect(self.buscar_manual)
         panel_layout.addWidget(self.search_bar)
-        
+
+        # Avisos de la búsqueda en línea, sin ventanas que interrumpan
+        self.busqueda_aviso_label = StyledLabel("", size=WindowsPhoneTheme.FONT_SIZE_NORMAL)
+        self.busqueda_aviso_label.setWordWrap(True)
+        self.busqueda_aviso_label.setStyleSheet(f"color: {WindowsPhoneTheme.TILE_RED}; padding: 4px 0;")
+        self.busqueda_aviso_label.hide()
+        panel_layout.addWidget(self.busqueda_aviso_label)
+
+        # Coincidencias por nombre: se toca la correcta
+        self.resultados_list = QListWidget()
+        self.resultados_list.setFont(QFont(WindowsPhoneTheme.FONT_FAMILY, WindowsPhoneTheme.FONT_SIZE_NORMAL))
+        self.resultados_list.setMinimumHeight(220)
+        self.resultados_list.setStyleSheet("QListWidget::item { padding: 10px; }")
+        self.resultados_list.itemClicked.connect(self._elegir_resultado)
+        self.resultados_list.hide()
+        panel_layout.addWidget(self.resultados_list)
+
         # Información del producto encontrado
         self.producto_info_label = StyledLabel("", size=WindowsPhoneTheme.FONT_SIZE_NORMAL)
         self.producto_info_label.setWordWrap(True)
@@ -220,90 +242,153 @@ class MovimientoInventarioWindow(QWidget):
         layout.addWidget(main_container)
     
     def eventFilter(self, obj, event):
-        """Filtrar eventos para detectar Enter del scanner en búsqueda de producto"""
+        """Mide cada tecla del campo de búsqueda para distinguir escáner de captura a mano"""
         if obj == self.search_bar.search_input and event.type() == QEvent.KeyPress:
-            key_event = event
-            # Solo loguear si es Enter, para no saturar el log
-            if key_event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                logging.info("[SCANNER] Enter detectado - buscando producto")
-                self.buscar_producto()
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self.scanner_timer.stop()
+                if self.detector.es_lectura():
+                    logging.info("[SCANNER] Enter tras lectura del escáner - buscando código")
+                    self.buscar_lectura()
+                else:
+                    self.buscar_manual()
                 return True  # Evento manejado
-        
-        return super().eventFilter(obj, event)
-    
-    def _on_search_text_changed(self):
-        """Detectar cuando se ingresa texto (para capturar escáner)"""
-        texto = self.search_bar.search_input.text().strip()
-        
-        # Reiniciar el timer cada vez que cambia el texto
-        self.scanner_timer.stop()
-        
-        # Si el texto tiene longitud suficiente para ser un código
-        if len(texto) >= 6:  # Códigos típicamente tienen 6+ caracteres
-            logging.info(f"[SCANNER] Código detectado (longitud {len(texto)}), iniciando timer...")
-            # Iniciar timer para buscar después de 300ms de inactividad
-            self.scanner_timer.start()
-    
-    def buscar_producto(self):
-        """Buscar producto por código"""
-        codigo = self.search_bar.search_input.text().strip()
-        
-        if not codigo:
-            show_warning_dialog(
-                self,
-                "Código requerido",
-                "Ingresa un código interno o código de barras"
-            )
-            return
-        
-        try:
-            # Buscar primero por código interno (con stock incluido)
-            producto = self.pg_manager.get_product_with_stock(codigo)
-            
-            # Si no se encuentra, intentar por código de barras
-            if not producto:
-                # Buscar en tablas de productos primero
-                prod = self.pg_manager.get_product_by_barcode(codigo)
-                if prod:
-                    # Si lo encontró por código de barras, obtener también el stock
-                    codigo_interno = prod.get('codigo_interno')
-                    producto = self.pg_manager.get_product_with_stock(codigo_interno)
-            
-            if producto:
-                self.producto_seleccionado = producto
-                
-                # Mostrar información del producto
-                stock_actual = producto.get('stock_actual', 0) if producto.get('stock_actual') else 0
-                info_text = (
-                    f"✓ Producto encontrado\n"
-                    f"Código: {producto['codigo_interno']}\n"
-                    f"Nombre: {producto['nombre']}\n"
-                    f"Stock actual: {stock_actual} unidades"
-                )
-                
-                self.producto_info_label.setText(info_text)
-                self.producto_info_label.show()
-                self.cantidad_spin.setFocus()
-                
-                logging.info(f"Producto encontrado: {producto['codigo_interno']} - {producto['nombre']}")
+
+            texto = event.text()
+            if len(texto) == 1 and texto.isprintable():
+                self.detector.tecla(time.monotonic() * 1000, len(self.search_bar.search_input.text()))
+                self.scanner_timer.start()
             else:
-                self.producto_seleccionado = None
-                self.producto_info_label.hide()
-                show_warning_dialog(
-                    self,
-                    "Producto no encontrado",
-                    f"No se encontró ningún producto con el código '{codigo}'"
-                )
-        
+                # Borrar o mover el cursor es captura a mano
+                self.detector.reiniciar()
+
+        return super().eventFilter(obj, event)
+
+    def _fin_de_rafaga(self):
+        """Pasó un momento sin teclas: si fue el escáner, buscar sin esperar Enter"""
+        if self.detector.es_lectura():
+            logging.info("[SCANNER] Lectura del escáner sin Enter - buscando código")
+            self.buscar_lectura()
+
+    def buscar_lectura(self):
+        """Buscar el código exacto que trajo el escáner"""
+        codigo = self.detector.codigo_leido(self.search_bar.search_input.text())
+        self.detector.reiniciar()
+        self.search_bar.search_input.setText(codigo)
+        if not codigo:
+            return
+        try:
+            producto = self._buscar_por_codigo(codigo)
         except Exception as e:
-            logging.error(f"Error buscando producto: {e}")
-            show_error_dialog(
-                self,
-                "Error de búsqueda",
-                "No se pudo buscar el producto",
-                detail=str(e)
-            )
-    
+            self._error_busqueda(e)
+            return
+        if producto:
+            self._seleccionar(producto)
+        else:
+            self._mostrar_aviso(f"No hay ningún producto con el código '{codigo}'")
+
+    def buscar_manual(self):
+        """Buscar lo que escribió la persona: primero código exacto, luego nombre o parte del código"""
+        self.detector.reiniciar()
+        texto = self.search_bar.search_input.text().strip()
+        if not texto:
+            self._mostrar_aviso("Escribe el nombre o el código del producto")
+            return
+        try:
+            producto = self._buscar_por_codigo(texto)
+            if producto:
+                self._seleccionar(producto)
+                return
+
+            # Comas y paréntesis rompen el filtro or() de PostgREST
+            patron = re.sub(r"[,()]", " ", texto).strip()
+            resultados = self.pg_manager.search_products(patron) if patron else []
+        except Exception as e:
+            self._error_busqueda(e)
+            return
+
+        if not resultados:
+            self._mostrar_aviso(f"No se encontró ningún producto con '{texto}'")
+        elif len(resultados) == 1:
+            self._elegir_codigo(resultados[0]['codigo_interno'])
+        else:
+            self._mostrar_resultados(resultados)
+
+    def _buscar_por_codigo(self, codigo):
+        """Producto con stock por código interno o, si no, por código de barras"""
+        producto = self.pg_manager.get_product_with_stock(codigo)
+        if not producto:
+            prod = self.pg_manager.get_product_by_barcode(codigo)
+            if prod:
+                producto = self.pg_manager.get_product_with_stock(prod.get('codigo_interno'))
+        return producto
+
+    def _mostrar_resultados(self, resultados):
+        self.producto_seleccionado = None
+        self.producto_info_label.hide()
+        self.resultados_list.clear()
+        for prod in sorted(resultados, key=lambda p: (p.get('nombre') or '').upper())[:MAX_RESULTADOS]:
+            stock = prod.get('stock_actual') or 0
+            item = QListWidgetItem(f"{prod.get('nombre')}   ·   código {prod.get('codigo_interno')}   ·   stock {stock}")
+            item.setData(Qt.UserRole, prod.get('codigo_interno'))
+            self.resultados_list.addItem(item)
+        extra = len(resultados) - MAX_RESULTADOS
+        aviso = f"{len(resultados)} productos coinciden: toca el correcto"
+        if extra > 0:
+            aviso += f" (se muestran {MAX_RESULTADOS}; escribe más para afinar)"
+        self._mostrar_aviso(aviso, color=WindowsPhoneTheme.PRIMARY_BLUE)
+        self.resultados_list.show()
+
+    def _elegir_resultado(self, item):
+        self._elegir_codigo(item.data(Qt.UserRole))
+
+    def _elegir_codigo(self, codigo_interno):
+        try:
+            producto = self.pg_manager.get_product_with_stock(codigo_interno)
+        except Exception as e:
+            self._error_busqueda(e)
+            return
+        if producto:
+            self._seleccionar(producto)
+        else:
+            self._mostrar_aviso(f"El producto '{codigo_interno}' no tiene registro de inventario")
+
+    def _seleccionar(self, producto):
+        """Deja el producto listo para capturar la cantidad"""
+        self.producto_seleccionado = producto
+        self.resultados_list.hide()
+        self.busqueda_aviso_label.hide()
+
+        stock_actual = producto.get('stock_actual') or 0
+        self.producto_info_label.setText(
+            f"✓ Producto encontrado\n"
+            f"Código: {producto['codigo_interno']}\n"
+            f"Nombre: {producto['nombre']}\n"
+            f"Stock actual: {stock_actual} unidades"
+        )
+        self.producto_info_label.show()
+        self.cantidad_spin.setFocus()
+        logging.info(f"Producto encontrado: {producto['codigo_interno']} - {producto['nombre']}")
+
+    def _mostrar_aviso(self, texto, color=None):
+        self.busqueda_aviso_label.setStyleSheet(
+            f"color: {color or WindowsPhoneTheme.TILE_RED}; padding: 4px 0;"
+        )
+        self.busqueda_aviso_label.setText(texto)
+        self.busqueda_aviso_label.show()
+        if color is None:
+            self.producto_seleccionado = None
+            self.producto_info_label.hide()
+            self.resultados_list.hide()
+
+    def _error_busqueda(self, e):
+        logging.error(f"Error buscando producto: {e}")
+        show_error_dialog(
+            self,
+            "Error de búsqueda",
+            "No se pudo buscar el producto",
+            detail=str(e)
+        )
+
     def _id_usuario_actual(self):
         """Id de quien opera la ventana, o None si no se conoce."""
         user_data = getattr(self, 'user_data', None)
@@ -512,6 +597,9 @@ class MovimientoInventarioWindow(QWidget):
         self.cantidad_spin.setValue(1)
         self.observaciones_input.clear()
         self.producto_info_label.hide()
+        self.busqueda_aviso_label.hide()
+        self.resultados_list.hide()
+        self.detector.reiniciar()
         self.producto_seleccionado = None
         self.search_bar.search_input.setFocus()
         
